@@ -5,9 +5,10 @@
 The module layout below is scaffolded in `sbom_scorer/` — every file exists
 with docstring-only stub functions (all raise `NotImplementedError`). No
 scoring logic, API calls, or graphing is implemented yet. `weights.yaml`
-holds the documented default weights/thresholds; `main.py` has argument
-parsing wired but no orchestration pipeline. See `README.md` for the
-current file tree.
+holds the documented default weights/thresholds; `sbom_scorer/cli.py` has
+argument parsing wired but no orchestration pipeline. The package installs
+as a proper command-line tool (`sbom-scorer`) via `pyproject.toml` — see
+`README.md` for install and invocation instructions.
 
 ## Data Flow
 
@@ -76,13 +77,16 @@ sbom_scorer/
 │   │   ├── __init__.py
 │   │   ├── python_callgraph.py # JARVIS/PyCG wrapper
 │   │   └── java_callgraph.py   # CodeQL wrapper
-│   └── output/
-│       ├── __init__.py
-│       ├── report.py           # JSON/CSV/console report generation
-│       └── visualize.py        # graph/chart generation — see VISUALIZATION.md
+│   ├── output/
+│   │   ├── __init__.py
+│   │   ├── report.py           # JSON/CSV/console report generation
+│   │   └── visualize.py        # graph/chart generation — see VISUALIZATION.md
+│   └── cli.py                  # CLI logic — installed as the `sbom-scorer` command
 ├── tests/
 │   └── ...
-└── main.py                     # CLI entry point
+├── pyproject.toml               # packaging + `sbom-scorer` console-script entry point
+├── weights.yaml                 # dimension weights, tier thresholds, missing-data defaults
+└── main.py                      # dev-mode shim — runs the CLI without installing
 ```
 
 ## Design Principles for Implementation
