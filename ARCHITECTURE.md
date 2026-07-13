@@ -1,5 +1,14 @@
 # Architecture
 
+## Implementation Status
+
+The module layout below is scaffolded in `sbom_scorer/` — every file exists
+with docstring-only stub functions (all raise `NotImplementedError`). No
+scoring logic, API calls, or graphing is implemented yet. `weights.yaml`
+holds the documented default weights/thresholds; `main.py` has argument
+parsing wired but no orchestration pipeline. See `README.md` for the
+current file tree.
+
 ## Data Flow
 
 ```

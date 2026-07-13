@@ -1,0 +1,32 @@
+# Dimension weights and tier thresholds for sbom_scorer.
+#
+# Per ARCHITECTURE.md design principle #4, sbom_scorer.composite is the
+# ONLY place these values are consumed from — no dimension module should
+# hardcode a weight. Values below are the documented defaults from
+# SCORING_MODEL.md and are a starting hypothesis, not fixed truth (see
+# HYPOTHESIS.md, sub-hypothesis H2, for the sensitivity-analysis framing
+# these values should be adjusted for).
+
+weights:
+  reachability: 0.25
+  exploitability: 0.20
+  exposure: 0.20
+  centrality: 0.15
+  patch_latency: 0.10
+  maintainer_health: 0.10
+
+tier_thresholds:
+  critical: 80   # 80-100
+  high: 60       # 60-79
+  medium: 40     # 40-59
+  low: 20        # 20-39
+  # 0-19 -> Informational
+
+missing_data_defaults:
+  reachability: 5.0          # indeterminate
+  exploitability: 0.0        # CVE absent from EPSS dataset (rare)
+  exposure: 10.0             # unknown -> worst case (internet-facing)
+  centrality: 0.0            # isolated/leaf node
+  maintainer_health: 5.0     # neutral, no Scorecard data
+  # patch_latency has no single default — see DIMENSIONS.md #5,
+  # scored via disclosure-date clock when no fix exists.
