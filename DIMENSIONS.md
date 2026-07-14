@@ -58,32 +58,58 @@ state it explicitly in any writeup.
 
 **Definition:** Percent chance the vulnerability will be exploited.
 
-**Implementation approach:**
+**Implementation approach (pipeline):**
 
-1. Pull the EPSS score for the CVE from FIRST.org's API
-   (`https://api.first.org/data/v1/epss?cve=...`), which returns a
-   probability (0–1) of exploitation within the next 30 days. Batch queries
-   are supported (comma-separated CVE list).
+| Step | What the code does | Input | Output |
+|---|---|---|---|
+| 1 | Collect CVE IDs from scanner/SBOM vulnerability results | Vulnerability records | `["CVE-2021-44228", ...]` |
+| 2 | Normalize and deduplicate CVEs | Raw CVE list | Unique uppercase CVE list |
+| 3 | Query EPSS batch API | CVE list | Map of CVE → EPSS probability, percentile, date |
+| 4 | Download KEV JSON feed | CISA KEV JSON | Map of CVE → KEV metadata |
+| 5 | Join EPSS and KEV data | CVE list + maps | Enriched vulnerability records |
+| 6 | Apply scoring rule | Enriched CVE record | 0–10 exploitability score |
+| 7 | Cache results locally | EPSS/KEV API responses | Reusable JSON cache |
+
+Notes on the pipeline:
+
+1. Pull EPSS data for the CVE from FIRST.org's API
+   (`https://api.first.org/data/v1/epss?cve=...`), which returns both a raw
+   probability (0–1) of exploitation within the next 30 days **and a
+   percentile** (rank relative to all other scored CVEs). Batch queries are
+   supported (comma-separated CVE list) — use the batch endpoint rather than
+   querying per-CVE.
 2. Pull the CISA KEV catalog (static JSON feed, refreshed daily) and check
    CVE membership.
 3. **KEV membership overrides EPSS.** If a CVE is in KEV, it's confirmed
-   actively exploited in the wild — score it at or near the maximum
-   regardless of its EPSS value.
-4. If not in KEV, transform the EPSS probability into a 0–10 score using a
-   **log or percentile scale, not linear**. Most CVEs have very low EPSS
-   scores (well under 0.01), so a linear 0–1 → 0–10 mapping compresses nearly
-   every CVE into the bottom of the range and produces no useful spread.
+   actively exploited in the wild — score it at the maximum regardless of
+   its EPSS value.
+4. If not in KEV, score off the **EPSS percentile, not the raw probability**,
+   using the table below. Most CVEs have very low raw EPSS probabilities
+   (well under 0.01), so mapping the raw probability linearly onto 0–10
+   compresses nearly every CVE into the bottom of the range and produces no
+   useful spread — percentile rank avoids that problem directly.
 
 **Score mapping:**
-| Condition | Score |
-|---|---|
-| CVE in CISA KEV | 10 |
-| EPSS ≥ ~0.5 (high confidence of exploitation) | 8–9 |
-| EPSS ~0.1–0.5 | 4–7 (log-scaled) |
-| EPSS < 0.1 | 0–3 (log-scaled) |
+| Condition | Score | Reason |
+|---|---|---|
+| CVE is in CISA KEV | 10 | Confirmed exploited in the wild |
+| EPSS percentile ≥ 0.99 | 9 | Top 1% of EPSS-ranked CVEs |
+| EPSS percentile ≥ 0.95 | 8 | Top 5% of EPSS-ranked CVEs |
+| EPSS percentile ≥ 0.90 | 7 | Top 10% of EPSS-ranked CVEs |
+| EPSS percentile ≥ 0.75 | 5 | Elevated exploit likelihood |
+| EPSS percentile ≥ 0.50 | 3 | Moderate relative exploit likelihood |
+| EPSS exists but percentile < 0.50 | 1 | Lower relative exploit likelihood |
+| No EPSS data and not in KEV | 5, low confidence | Unknown, not assumed safe |
+
+Note this default changed from an earlier draft (which used 0/"not found is
+rare, treat conservatively as low") — the current position is that an
+unscored, non-KEV CVE is **genuinely unknown**, not evidence of low risk, so
+it defaults to the same indeterminate mid-score philosophy used elsewhere in
+this model (see Reachability's 5/indeterminate default) rather than assuming
+safety.
 
 **Caching note:** cache both EPSS and KEV data locally on a daily refresh
-cycle rather than querying live per scan run.
+cycle rather than querying live per scan run (see pipeline step 7).
 
 ---
 
@@ -132,22 +158,51 @@ goal is to make that input **structured**, not free text.
 
 **Definition:** How many other components depend on this one?
 
-**Implementation approach:**
+**Implementation approach:** two sub-methods, computed on the same
+dependency graph, combined into one 0–10 score.
+
+**Sub-method A — Reachable Dependents (blast radius proper):**
 
 1. Parse the SBOM's dependency graph — CycloneDX `dependencies[]` or SPDX
    `relationships[]` — into a directed graph (NetworkX `DiGraph`), with edges
    representing "depends on."
-2. To find blast radius for a given component, compute `ancestors()` on the
-   reverse of that graph (i.e., everything that transitively depends on this
-   component — everything that would be affected if this component were
-   compromised).
-3. Normalize the raw ancestor count into a 0–10 score using a **log scale**,
-   since centrality distributions in real dependency graphs are heavily
-   right-skewed (a small number of components have huge blast radius, most
-   have very little).
+2. Reverse the dependency graph.
+3. To find blast radius for a given component, perform a BFS/DFS (or
+   `ancestors()`) starting from that component on the reversed graph —
+   i.e., everything that transitively depends on this component, everything
+   that would be affected if this component were compromised.
+4. Normalize the raw dependent count into a 0–10 score using a **log
+   scale**, since centrality distributions in real dependency graphs are
+   heavily right-skewed (a small number of components have huge blast
+   radius, most have very little). Alternative linear normalization:
+   divide by the total number of possible dependents (`N - 1`) and scale
+   to 0–10.
 
-**Score mapping:** log-normalized against the total component count in the
-SBOM, e.g. `score = min(10, log2(count+1) / log2(total+1) * 10)`.
+Sub-method A score: `min(10, log2(count+1) / log2(total+1) * 10)`.
+
+**Sub-method B — Betweenness Centrality:**
+
+1. On the original (non-reversed) dependency graph, calculate the
+   betweenness centrality of the component being evaluated.
+2. This measures how often the component lies on the shortest dependency
+   paths between *other* components — a proxy for how much it acts as a
+   structural bridge in the dependency network, which is a different signal
+   than raw dependent count (a component can be a critical bridge without
+   having a huge number of direct/transitive dependents).
+3. Scale the normalized betweenness value (0–1, as returned by
+   `networkx.betweenness_centrality`) to a 0–10 score.
+
+Sub-method B score: `betweenness_centrality * 10`.
+
+**Combining the two sub-scores:** not yet finalized — a straight average is
+the current working default (treats both signals as equally informative),
+but taking the max (biasing toward whichever signal is more alarming for a
+given component) is a reasonable alternative worth testing empirically
+before locking this in. Document whichever choice is made, and why, in the
+paper's methodology section.
+
+**Score mapping:** each sub-method independently normalized to 0–10 as
+described above; combined per the note directly above.
 
 ---
 

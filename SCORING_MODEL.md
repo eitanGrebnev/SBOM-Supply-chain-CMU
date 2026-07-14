@@ -73,7 +73,7 @@ weighted formula runs, not as a seventh dimension:
 | Dimension | Default when data is missing | Reasoning |
 |---|---|---|
 | Reachability | 5 (indeterminate) | Can't build a call graph ≠ proven safe. Split the difference rather than guessing either direction. |
-| Exploitability | 0 for EPSS if CVE not found (rare) | Absence from EPSS dataset is unusual and typically means very new/obscure CVE — treat conservatively as low until data exists. |
+| Exploitability | 5, low confidence (no EPSS data and not in KEV) | Updated from an earlier draft's "0, conservative" default — absence of EPSS data is genuinely unknown risk, not evidence of low risk, so it now follows the same indeterminate-midpoint philosophy as Reachability rather than assuming safety. |
 | Exposure Context | 10 (internet-facing / worst case) | Unknown exposure should never be assumed safe. |
 | Dependency Centrality | 0 if isolated/leaf node | This one is usually knowable directly from the graph — true missing data is rare here. |
 | Patch Latency | Scored via disclosure-date clock if no fix exists | Not really "missing data" — it's a distinct, valid case. |

@@ -19,6 +19,34 @@ vulnerabilities that are later confirmed as actively exploited.
 H0: The composite score's prioritization does not differ meaningfully from
 CVSS-only prioritization in terms of which CVEs are flagged Critical/High.
 
+## Alternate Framing Under Consideration
+
+The brainstorming doc floats a possible revision of the primary hypothesis
+wording, not yet adopted as the primary statement but worth carrying
+forward as a documented alternative — it reframes exploitability as two
+separable signals (likelihood vs. confirmed exploitation) rather than one:
+
+> A composite SBOM-based vulnerability score incorporating reachability,
+> exploit likelihood, confirmed exploitation, exposure context, dependency
+> graph centrality, patch latency, and maintainer health will prioritize a
+> smaller and more actionable set of vulnerabilities than CVSS-only triage,
+> while maintaining or improving recall for vulnerabilities that are later
+> confirmed as actively exploited through CISA KEV or high EPSS percentile
+> movement.
+
+This doesn't change the six-dimension model or the weights in
+`SCORING_MODEL.md` — "exploit likelihood" (EPSS) and "confirmed
+exploitation" (KEV) are still both handled inside the single Exploitability
+dimension, per `DIMENSIONS.md` #2. It's a phrasing candidate for the paper,
+not a structural change to the tool.
+
+**Weight validation methodology note (also from the brainstorming doc):**
+the 25/20/20/15/10/10 weighting should be treated explicitly as an
+**initial expert-weighted prior**, and validated against a golden standard
+— CVSS-only triage is the natural baseline candidate — before being
+presented as anything more than a starting hypothesis. This is consistent
+with, and reinforces, H2 below.
+
 ## Sub-Hypotheses
 
 **H1 — Noise Reduction**

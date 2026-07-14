@@ -44,6 +44,11 @@ general vulnerability lookup source.
 - As of EPSS v4 (March 2025), CVEs in the NVD backlog without an official
   CVSS score can still have EPSS scores — don't assume "no CVSS" means "no
   EPSS."
+- Each record returns both `epss` (raw probability, 0–1) and `percentile`
+  (rank relative to all other scored CVEs, 0–1). Per `DIMENSIONS.md` #2,
+  the scoring table is keyed off **`percentile`**, not the raw `epss`
+  value — raw probabilities cluster near zero for most CVEs, so percentile
+  rank gives a usable spread where a linear probability mapping wouldn't.
 
 ## CISA KEV Catalog
 

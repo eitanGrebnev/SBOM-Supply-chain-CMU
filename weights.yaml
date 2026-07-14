@@ -24,7 +24,7 @@ tier_thresholds:
 
 missing_data_defaults:
   reachability: 5.0          # indeterminate
-  exploitability: 0.0        # CVE absent from EPSS dataset (rare)
+  exploitability: 5.0        # low confidence: no EPSS data and not in KEV
   exposure: 10.0             # unknown -> worst case (internet-facing)
   centrality: 0.0            # isolated/leaf node
   maintainer_health: 5.0     # neutral, no Scorecard data
