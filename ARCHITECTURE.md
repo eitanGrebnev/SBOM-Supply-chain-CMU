@@ -3,12 +3,13 @@
 ## Implementation Status
 
 The module layout below is scaffolded in `sbom_scorer/` — every file exists
-with docstring-only stub functions (all raise `NotImplementedError`). No
-scoring logic, API calls, or graphing is implemented yet. `weights.yaml`
-holds the documented default weights/thresholds; `sbom_scorer/cli.py` has
-argument parsing wired but no orchestration pipeline. The package installs
-as a proper command-line tool (`sbom-scorer`) via `pyproject.toml` — see
-`README.md` for install and invocation instructions.
+for the planned architecture. Exploitability is implemented with batched EPSS
+lookups, the CISA KEV override, joined source metadata, percentile scoring, and
+daily local caches. The other dimensions still raise `NotImplementedError`.
+`weights.yaml` holds the documented default weights/thresholds;
+`sbom_scorer/cli.py` has argument parsing wired but no orchestration pipeline.
+The package installs as a proper command-line tool (`sbom-scorer`) via
+`pyproject.toml` — see `README.md` for install and invocation instructions.
 
 ## Data Flow
 
