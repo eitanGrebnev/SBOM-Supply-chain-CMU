@@ -23,11 +23,6 @@ def test_reachability_stub():
         reachability.score_reachability(component=None, cve_id="CVE-0000-0000", codebase_path=".")
 
 
-def test_exploitability_stub():
-    with pytest.raises(NotImplementedError):
-        exploitability.score_exploitability(cve_id="CVE-0000-0000")
-
-
 def test_exposure_stub():
     with pytest.raises(NotImplementedError):
         exposure.score_exposure(exposure_tier=None)
