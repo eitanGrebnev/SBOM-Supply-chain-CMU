@@ -121,3 +121,9 @@ general vulnerability lookup source.
 | CISA KEV | Daily | Static file, small |
 | OSSF Scorecard | Weekly | Scorecard's own batch scan runs weekly |
 | Package registry release dates | Cache indefinitely per version | Release dates never change once published |
+
+EPSS and KEV caches default to `~/.cache/sbom-scorer/epss.json` and
+`~/.cache/sbom-scorer/kev.json`. Set `SBOM_SCORER_EPSS_CACHE` or
+`SBOM_SCORER_KEV_CACHE` to override either location. EPSS caches both returned
+records and queried CVEs that had no record, preventing repeated same-day
+lookups for known misses.

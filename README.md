@@ -7,12 +7,11 @@ research paper.
 
 ## Status
 
-Project skeleton only. The module structure in `sbom_scorer/` matches
-`ARCHITECTURE.md`'s layout, with docstring-only stub functions (all raise
-`NotImplementedError`). Nothing is wired up yet — no API calls, no scoring
-logic, no graphing. The command-line tool below already installs and runs;
-it just doesn't do the actual scoring yet. Fill in incrementally, module by
-module.
+The Exploitability dimension is implemented, including batched EPSS lookup,
+CISA KEV override metadata, percentile scoring, and daily local JSON caches.
+The remaining dimensions and end-to-end CLI orchestration are still scaffolded
+as stubs. The command-line tool below installs and runs, but does not yet run a
+complete scan.
 
 ## How to Run It
 
