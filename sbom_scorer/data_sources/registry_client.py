@@ -33,19 +33,50 @@ def get_release_date(ecosystem: str, package: str, version: str) -> datetime.dat
 
     Returns:
         The release datetime, or None if it could not be resolved.
-
-    Raises:
-        NotImplementedError: Always, in this scaffolding stub.
     """
-    raise NotImplementedError
+    ecosystem = ecosystem.lower()
+    if ecosystem == "pypi":
+        return _pypi_release_date(package, version)
+    elif ecosystem == "npm":
+        return _npm_release_date(package, version)
+    # Others omitted for now
+    return None
 
 
 def _pypi_release_date(package: str, version: str) -> datetime.datetime | None:
-    raise NotImplementedError
+    import requests
+    url = f"https://pypi.org/pypi/{package}/{version}/json"
+    try:
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        urls = data.get("urls", [])
+        if urls:
+            upload_time = urls[0].get("upload_time")
+            if upload_time:
+                return datetime.datetime.fromisoformat(upload_time).replace(tzinfo=datetime.timezone.utc)
+    except requests.RequestException:
+        pass
+    return None
 
 
 def _npm_release_date(package: str, version: str) -> datetime.datetime | None:
-    raise NotImplementedError
+    import requests
+    url = f"https://registry.npmjs.org/{package}"
+    try:
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        time_dict = data.get("time", {})
+        release_time = time_dict.get(version)
+        if release_time:
+            # Handle standard ISO8601 strings from npm
+            if release_time.endswith("Z"):
+                release_time = release_time[:-1] + "+00:00"
+            return datetime.datetime.fromisoformat(release_time).replace(tzinfo=datetime.timezone.utc)
+    except requests.RequestException:
+        pass
+    return None
 
 
 def _maven_release_date(package: str, version: str) -> datetime.datetime | None:

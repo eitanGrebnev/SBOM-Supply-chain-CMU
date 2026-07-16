@@ -28,11 +28,22 @@ def query_by_package(name: str, ecosystem: str, version: str) -> dict:
     Returns:
         Raw OSV response dict, including `published`, `affected[].ranges[].events`,
         and `references[]` (look for type == "FIX").
-
-    Raises:
-        NotImplementedError: Always, in this scaffolding stub.
     """
-    raise NotImplementedError
+    import requests
+    payload = {
+        "version": version,
+        "package": {
+            "name": name,
+            "ecosystem": ecosystem
+        }
+    }
+    try:
+        response = requests.post(OSV_QUERY_URL, json=payload, timeout=10)
+        response.raise_for_status()
+        return response.json()
+    except requests.RequestException as e:
+        print(f"Error querying OSV for {name}@{version}: {e}")
+        return {}
 
 
 def query_by_commit(commit_hash: str) -> dict:

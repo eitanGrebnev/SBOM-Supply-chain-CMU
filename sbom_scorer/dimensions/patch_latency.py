@@ -17,6 +17,8 @@ from typing import Any
 from sbom_scorer.composite import DimensionScore
 
 
+from datetime import datetime, timezone
+
 def score_patch_latency(component: Any, cve_id: str) -> DimensionScore:
     """Score patch latency for a component's CVE.
 
@@ -26,11 +28,54 @@ def score_patch_latency(component: Any, cve_id: str) -> DimensionScore:
 
     Returns:
         DimensionScore with score in [0, 10] and a confidence flag.
-
-    Raises:
-        NotImplementedError: Always, in this scaffolding stub.
     """
-    raise NotImplementedError
+    from sbom_scorer.data_sources import osv_client, registry_client
+    
+    # 1. Query OSV
+    res = osv_client.query_by_package(component.name, component.ecosystem, component.version)
+    vulns = res.get("vulns", [])
+    target_vuln = None
+    for v in vulns:
+        if v.get("id") == cve_id or cve_id in v.get("aliases", []):
+            target_vuln = v
+            break
+            
+    if not target_vuln:
+        # Not found in OSV, indeterminate latency
+        return DimensionScore(score=0.0, confidence="indeterminate")
+        
+    disclosure_date_str = target_vuln.get("published")
+    if not disclosure_date_str:
+        return DimensionScore(score=0.0, confidence="indeterminate")
+        
+    if disclosure_date_str.endswith("Z"):
+        disclosure_date_str = disclosure_date_str[:-1] + "+00:00"
+    disclosure_date = datetime.fromisoformat(disclosure_date_str).replace(tzinfo=timezone.utc)
+    
+    # 2. Find fixed version
+    fixed_version = None
+    for affected in target_vuln.get("affected", []):
+        for r in affected.get("ranges", []):
+            for event in r.get("events", []):
+                if "fixed" in event:
+                    fixed_version = event["fixed"]
+                    break
+            if fixed_version: break
+        if fixed_version: break
+        
+    now = datetime.now(timezone.utc)
+    
+    if fixed_version:
+        release_date = registry_client.get_release_date(component.ecosystem, component.name, fixed_version)
+        if release_date:
+            days = (now - release_date).days
+            score = _score_fix_exists(max(0, days))
+            return DimensionScore(score=score, confidence="high")
+            
+    # No fix exists (or couldn't find release date for fix)
+    days = (now - disclosure_date).days
+    score = _score_no_fix_exists(max(0, days))
+    return DimensionScore(score=score, confidence="high")
 
 
 def _score_fix_exists(days_since_fix_release: int) -> float:
@@ -38,9 +83,20 @@ def _score_fix_exists(days_since_fix_release: int) -> float:
 
     0 days = 0, 60+ days unpatched = 10, linear/capped ramp in between.
     """
-    raise NotImplementedError
+    if days_since_fix_release <= 0:
+        return 0.0
+    if days_since_fix_release >= 60:
+        return 10.0
+    return (days_since_fix_release / 60.0) * 10.0
 
 
 def _score_no_fix_exists(days_since_disclosure: int) -> float:
-    """Score when no fix exists yet — scales with time since disclosure."""
-    raise NotImplementedError
+    """Score when no fix exists yet — scales with time since disclosure.
+    
+    0 days = 0, 60+ days unpatchable = 10, linear/capped ramp in between.
+    """
+    if days_since_disclosure <= 0:
+        return 0.0
+    if days_since_disclosure >= 60:
+        return 10.0
+    return (days_since_disclosure / 60.0) * 10.0
