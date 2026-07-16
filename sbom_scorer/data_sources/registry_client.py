@@ -17,8 +17,10 @@ Caching: indefinite per version (release dates never change once published).
 from __future__ import annotations
 
 import datetime
+import functools
 
 
+@functools.lru_cache(maxsize=None)
 def get_release_date(ecosystem: str, package: str, version: str) -> datetime.datetime | None:
     """Resolve the release timestamp for a specific package version.
 
