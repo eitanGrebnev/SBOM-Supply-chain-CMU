@@ -3,13 +3,20 @@
 ## Implementation Status
 
 The module layout below is scaffolded in `sbom_scorer/` — every file exists
-for the planned architecture. Exploitability is implemented with batched EPSS
-lookups, the CISA KEV override, joined source metadata, percentile scoring, and
-daily local caches. The other dimensions still raise `NotImplementedError`.
-`weights.yaml` holds the documented default weights/thresholds;
-`sbom_scorer/cli.py` has argument parsing wired but no orchestration pipeline.
-The package installs as a proper command-line tool (`sbom-scorer`) via
-`pyproject.toml` — see `README.md` for install and invocation instructions.
+for the planned architecture. Three of six dimensions are implemented:
+Exploitability (batched EPSS lookups, CISA KEV override, joined source
+metadata, percentile scoring, daily local caches), Patch Latency (OSV.dev +
+package-registry release dates, fix-exists vs. no-fix-exists sub-cases), and
+Maintainer Health (OSSF Scorecard per-check scores, reweighted sub-formula,
+GitHub repo resolution via `vcs_url` or registry metadata, weekly local
+cache). Reachability, Exposure Context, and Centrality still raise
+`NotImplementedError`, as does `sbom_parser.py` itself — none of the three
+implemented dimensions depend on it; each is tested against hand-built
+`Component` objects rather than a real parsed SBOM. `weights.yaml` holds the
+documented default weights/thresholds; `sbom_scorer/cli.py` has argument
+parsing wired but no orchestration pipeline. The package installs as a
+proper command-line tool (`sbom-scorer`) via `pyproject.toml` — see
+`README.md` for install and invocation instructions.
 
 ## Data Flow
 
@@ -73,7 +80,8 @@ sbom_scorer/
 │   │   ├── epss_client.py
 │   │   ├── kev_client.py
 │   │   ├── scorecard_client.py
-│   │   └── registry_client.py  # PyPI/npm/etc. release-date lookups
+│   │   ├── registry_client.py  # PyPI/npm/etc. release-date + repo-url lookups
+│   │   └── repo_resolver.py    # Component -> GitHub owner/repo, for Maintainer Health
 │   ├── callgraph/
 │   │   ├── __init__.py
 │   │   ├── python_callgraph.py # JARVIS/PyCG wrapper

@@ -31,6 +31,13 @@ class Component:
             (embedded vulnerability data) or resolved via OSV lookup.
         exposure_tier: Exposure tier tag read from SBOM properties, if any.
             See DIMENSIONS.md #3 (Exposure Context) for the tier vocabulary.
+        vcs_url: Source-repo URL, if declared. Sourced from CycloneDX
+            externalReferences (type "vcs") once _parse_cyclonedx is
+            implemented; until then this is populated only by callers that
+            set it directly (e.g. tests). See DIMENSIONS.md #6 (Maintainer
+            Health), which resolves a GitHub owner/repo from this field
+            (falling back to registry metadata) via
+            sbom_scorer.data_sources.repo_resolver.
     """
 
     name: str
@@ -39,6 +46,7 @@ class Component:
     purl: str | None = None
     cve_ids: list[str] | None = None
     exposure_tier: str | None = None
+    vcs_url: str | None = None
 
 
 def parse_sbom(path: str) -> tuple[list[Component], nx.DiGraph]:

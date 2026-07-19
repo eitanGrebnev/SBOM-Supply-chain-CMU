@@ -7,10 +7,22 @@ research paper.
 
 ## Status
 
-The Exploitability dimension is implemented, including batched EPSS lookup,
-CISA KEV override metadata, percentile scoring, and daily local JSON caches.
-The remaining dimensions and end-to-end CLI orchestration are still scaffolded
-as stubs. The command-line tool below installs and runs, but does not yet run a
+Three of the six scoring dimensions are implemented:
+
+- **Exploitability** — batched EPSS lookup, CISA KEV override metadata,
+  percentile scoring, daily local JSON caches.
+- **Patch Latency** — OSV.dev disclosure/fix-version lookup plus package
+  registry release-date resolution, with separate fix-exists vs.
+  no-fix-exists scoring.
+- **Maintainer Health** — OSSF Scorecard per-check scores reweighted via a
+  custom sub-formula, with GitHub repo resolution from SBOM data or package
+  registry metadata, and a weekly local cache.
+
+Reachability, Exposure Context, and Dependency Centrality are still
+scaffolded as stubs, as is SBOM parsing itself (`sbom_parser.py`) and
+end-to-end CLI orchestration — the implemented dimensions are each tested
+independently against hand-built components, not a real parsed SBOM yet.
+The command-line tool below installs and runs, but does not yet run a
 complete scan.
 
 ## How to Run It

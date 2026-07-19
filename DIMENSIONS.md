@@ -248,28 +248,43 @@ release signing, single vs. multiple maintainers.
 
 **Implementation approach:**
 
+0. Resolve the component to a GitHub `owner/repo` first, since a Component
+   doesn't carry that directly: prefer its declared `vcs_url` (from
+   CycloneDX `externalReferences` of type `vcs`, once SBOM parsing
+   populates it); otherwise fall back to the source-repo URL declared in
+   the package's registry entry (PyPI `project_urls`, npm `repository`).
+   If neither resolves to a `github.com` URL, treat it the same as "no
+   Scorecard data" (step 4) — Scorecard's API and most of its checks are
+   GitHub-specific.
 1. Query the OSSF Scorecard public REST API
-   (`https://api.securityscorecards.dev/projects/{owner}/{repo}`) for the
-   repository backing the dependency. This covers most popular OSS packages
-   already — no need to run the Scorecard CLI yourself unless a dependency
-   isn't indexed.
+   (`https://api.securityscorecards.dev/projects/github.com/{owner}/{repo}`)
+   for the repository backing the dependency. This covers most popular OSS
+   packages already — no need to run the Scorecard CLI yourself unless a
+   dependency isn't indexed.
 2. Pull **individual check scores**, not just Scorecard's bundled aggregate,
    so a custom weighted sub-formula can be built that matches this project's
-   specific definition of "maintainer health":
-   - `Maintained` (repo activity) — weight heavily
-   - `Signed-Releases` (signing) — weight heavily
-   - `Code-Review` / `Contributors` (single vs. multiple maintainers) —
-     weight heavily
-   - `Branch-Protection`, `Vulnerabilities` — weight lightly, secondary
-     signals
+   specific definition of "maintainer health". Finalized weights (sum to
+   1.0):
+   - `Maintained` — 0.20
+   - `Signed-Releases` — 0.20
+   - `Code-Review` — 0.20
+   - `Contributors` — 0.20
+   - `Branch-Protection` — 0.10
+   - `Vulnerabilities` — 0.10
 3. Scorecard returns `-1` for checks that are **not applicable** to a given
-   project (e.g. `Code-Review` for a genuinely sole-maintainer repo) — when
-   this happens, redistribute that check's weight across the remaining
-   applicable checks rather than treating `-1` as a zero/failing score.
-4. If Scorecard has no data at all for a repo (not yet indexed), default to a
-   **neutral mid-score**, not a failing one — absence of data isn't evidence
-   of poor maintenance.
+   project (e.g. `Code-Review` for a genuinely sole-maintainer repo), and the
+   weekly-batch API can simply omit `Contributors` (and `CI-Tests`,
+   `Dependency-Update-Tool`, which aren't in this sub-formula) entirely —
+   both cases are treated identically: redistribute that check's weight
+   proportionally across the remaining present, valid checks rather than
+   treating it as a zero/failing score.
+4. If Scorecard has no data at all for a repo (not yet indexed), or none of
+   the six tracked checks are present/valid, default to a **neutral
+   mid-score** (5.0), not a failing one — absence of data isn't evidence of
+   poor maintenance. When fewer than 4 of the 6 checks are usable, the score
+   is still reported (not defaulted) but flagged lower-confidence, since
+   substantial redistribution happened.
 
 **Score mapping:** weighted average of applicable Scorecard check scores
 (each 0–10 natively), re-weighted per the sub-formula above; `5.0` default
-when no Scorecard data exists.
+when no Scorecard data exists (repo unresolvable or not indexed).
