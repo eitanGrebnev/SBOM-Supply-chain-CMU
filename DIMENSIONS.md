@@ -152,6 +152,20 @@ goal is to make that input **structured**, not free text.
 | `internet_facing` | 10 |
 | Unknown/missing | 10 (defaults to worst case) |
 
+**Implementation note:** `sbom_scorer.sbom_parser._parse_cyclonedx` reads
+the tag from `metadata.component.properties[]` only (matching point 2
+above — service-level, not per-component), matching on property name
+`exposure:tier` case-insensitively and normalizing the value (lowercased,
+hyphens → underscores, e.g. `"Internet-Facing"` → `"internet_facing"`) so
+common producer formatting variants still match the tier vocabulary. That
+single value is applied to every `Component` parsed from the SBOM, not
+looked up per component. The parser doesn't validate the value against the
+tier enum — an unrecognized string is passed through as-is;
+`sbom_scorer.dimensions.exposure.score_exposure` is what falls back to the
+worst-case default for `None` or unrecognized values (also re-normalizing
+defensively, in case a `Component` was built directly rather than via the
+parser).
+
 ---
 
 ## 4. Dependency Centrality (Blast Radius)

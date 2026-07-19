@@ -29,6 +29,14 @@ class ExposureTier(str, Enum):
     INTERNET_FACING = "internet_facing"
 
 
+# Score mapping per DIMENSIONS.md #3.
+_SCORE_BY_TIER: dict[ExposureTier, float] = {
+    ExposureTier.DEV_ONLY: 0.0,
+    ExposureTier.INTERNAL: 5.0,
+    ExposureTier.INTERNET_FACING: 10.0,
+}
+
+
 def score_exposure(exposure_tier: str | None) -> DimensionScore:
     """Score exposure context from a component/service's tagged exposure tier.
 
@@ -38,9 +46,23 @@ def score_exposure(exposure_tier: str | None) -> DimensionScore:
             if untagged.
 
     Returns:
-        DimensionScore with score in [0, 10] and a confidence flag.
-
-    Raises:
-        NotImplementedError: Always, in this scaffolding stub.
+        DimensionScore with score in [0, 10] and a confidence flag: "high"
+        when the tier is a recognized value, "default" when it's missing or
+        unrecognized — both fall back to DEFAULT_SCORE_UNKNOWN (worst case),
+        per SSVC guidance that unknown exposure should never be assumed
+        safe.
     """
-    raise NotImplementedError
+    if not exposure_tier:
+        return DimensionScore(score=DEFAULT_SCORE_UNKNOWN, confidence="default")
+
+    # Defensive re-normalization: sbom_scorer.sbom_parser._extract_exposure_tier
+    # already lowercases/hyphen-normalizes values it reads from a real SBOM,
+    # but a Component built directly (e.g. in a test, or by a future caller
+    # that doesn't go through the parser) might not have.
+    normalized = exposure_tier.strip().lower().replace("-", "_")
+    try:
+        tier = ExposureTier(normalized)
+    except ValueError:
+        return DimensionScore(score=DEFAULT_SCORE_UNKNOWN, confidence="default")
+
+    return DimensionScore(score=_SCORE_BY_TIER[tier], confidence="high")

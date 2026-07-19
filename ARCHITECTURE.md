@@ -3,16 +3,31 @@
 ## Implementation Status
 
 The module layout below is scaffolded in `sbom_scorer/` — every file exists
-for the planned architecture. Three of six dimensions are implemented:
+for the planned architecture. Four of six dimensions are implemented:
 Exploitability (batched EPSS lookups, CISA KEV override, joined source
 metadata, percentile scoring, daily local caches), Patch Latency (OSV.dev +
-package-registry release dates, fix-exists vs. no-fix-exists sub-cases), and
+package-registry release dates, fix-exists vs. no-fix-exists sub-cases),
 Maintainer Health (OSSF Scorecard per-check scores, reweighted sub-formula,
 GitHub repo resolution via `vcs_url` or registry metadata, weekly local
-cache). Reachability, Exposure Context, and Centrality still raise
-`NotImplementedError`, as does `sbom_parser.py` itself — none of the three
-implemented dimensions depend on it; each is tested against hand-built
-`Component` objects rather than a real parsed SBOM. `weights.yaml` holds the
+cache), and Exposure Context (fixed SSVC-style exposure tiers, read from a
+CycloneDX SBOM's tagged exposure property, worst-case default when
+untagged/unrecognized). Reachability and Centrality still raise
+`NotImplementedError`.
+
+`sbom_parser.py` is now partially implemented: `_parse_cyclonedx` handles
+JSON CycloneDX end-to-end for the slice Exposure Context and Maintainer
+Health need — `components[]` (name/version/ecosystem/purl),
+`externalReferences` (type `vcs`, → `Component.vcs_url`), and
+`metadata.component.properties[]` (the SBOM-wide `exposure:tier` tag, →
+every `Component.exposure_tier`). It returns a `DiGraph` with one node per
+component (keyed by CycloneDX bom-ref) but **no edges** —
+`dependencies[]` parsing, XML-encoded CycloneDX, and SPDX (any encoding)
+are still out of scope and raise `NotImplementedError`/are simply
+unimplemented; that's the next slice, for whoever ends up owning Centrality
+or full orchestration. Exploitability, Patch Latency, and Maintainer Health
+are each still tested against hand-built `Component` objects rather than a
+real parsed SBOM; Exposure Context and the parser slice above are tested
+against real (hand-built) CycloneDX JSON fixtures. `weights.yaml` holds the
 documented default weights/thresholds; `sbom_scorer/cli.py` has argument
 parsing wired but no orchestration pipeline. The package installs as a
 proper command-line tool (`sbom-scorer`) via `pyproject.toml` — see

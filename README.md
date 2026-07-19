@@ -7,7 +7,7 @@ research paper.
 
 ## Status
 
-Three of the six scoring dimensions are implemented:
+Four of the six scoring dimensions are implemented:
 
 - **Exploitability** — batched EPSS lookup, CISA KEV override metadata,
   percentile scoring, daily local JSON caches.
@@ -17,13 +17,16 @@ Three of the six scoring dimensions are implemented:
 - **Maintainer Health** — OSSF Scorecard per-check scores reweighted via a
   custom sub-formula, with GitHub repo resolution from SBOM data or package
   registry metadata, and a weekly local cache.
+- **Exposure Context** — fixed exposure tiers (`dev_only`/`internal`/
+  `internet_facing`) read from a CycloneDX SBOM's tagged exposure property,
+  defaulting to worst-case when untagged.
 
-Reachability, Exposure Context, and Dependency Centrality are still
-scaffolded as stubs, as is SBOM parsing itself (`sbom_parser.py`) and
-end-to-end CLI orchestration — the implemented dimensions are each tested
-independently against hand-built components, not a real parsed SBOM yet.
-The command-line tool below installs and runs, but does not yet run a
-complete scan.
+Reachability and Dependency Centrality are still scaffolded as stubs, as is
+end-to-end CLI orchestration. SBOM parsing (`sbom_parser.py`) is partially
+implemented: JSON CycloneDX components, exposure-tier tagging, and VCS
+external references are parsed, but dependency-graph *edges*, XML
+CycloneDX, and SPDX are not — see the module's docstring. The command-line
+tool below installs and runs, but does not yet run a complete scan.
 
 ## How to Run It
 

@@ -5,26 +5,18 @@ score-mapping tables in DIMENSIONS.md. For now this just asserts the
 stubs raise NotImplementedError so the test suite has a non-empty
 baseline to build on. Implemented dimensions get their own test module
 (exploitability -> test_exploitability.py, maintainer_health ->
-test_maintainer_health.py) instead of a stub assertion here.
+test_maintainer_health.py, exposure -> test_exposure.py) instead of a
+stub assertion here.
 """
 
 import pytest
 
-from sbom_scorer.dimensions import (
-    centrality,
-    exposure,
-    reachability,
-)
+from sbom_scorer.dimensions import centrality, reachability
 
 
 def test_reachability_stub():
     with pytest.raises(NotImplementedError):
         reachability.score_reachability(component=None, cve_id="CVE-0000-0000", codebase_path=".")
-
-
-def test_exposure_stub():
-    with pytest.raises(NotImplementedError):
-        exposure.score_exposure(exposure_tier=None)
 
 
 def test_centrality_stub():
