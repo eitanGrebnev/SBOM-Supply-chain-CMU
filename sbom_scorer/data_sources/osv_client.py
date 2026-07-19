@@ -12,11 +12,12 @@ Caching: per-scan / live (query is cheap and specific to package+version).
 """
 
 from __future__ import annotations
+import functools
 
 OSV_QUERY_URL = "https://api.osv.dev/v1/query"
 OSV_QUERYBATCH_URL = "https://api.osv.dev/v1/querybatch"
 
-
+@functools.lru_cache(maxsize=None)
 def query_by_package(name: str, ecosystem: str, version: str) -> dict:
     """Query OSV.dev for vulnerabilities affecting a specific package version.
 
@@ -28,11 +29,22 @@ def query_by_package(name: str, ecosystem: str, version: str) -> dict:
     Returns:
         Raw OSV response dict, including `published`, `affected[].ranges[].events`,
         and `references[]` (look for type == "FIX").
-
-    Raises:
-        NotImplementedError: Always, in this scaffolding stub.
     """
-    raise NotImplementedError
+    import requests
+    payload = {
+        "version": version,
+        "package": {
+            "name": name,
+            "ecosystem": ecosystem
+        }
+    }
+    try:
+        response = requests.post(OSV_QUERY_URL, json=payload, timeout=10)
+        response.raise_for_status()
+        return response.json()
+    except requests.RequestException as e:
+        print(f"Error querying OSV for {name}@{version}: {e}")
+        return {}
 
 
 def query_by_commit(commit_hash: str) -> dict:
