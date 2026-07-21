@@ -12,6 +12,19 @@ overall risk posture look like," which matters both for the tool's practical
 usefulness and for the paper's results section (H1/H2 in `HYPOTHESIS.md`
 both benefit from visual comparison, not just tables of numbers).
 
+## Implementation Status
+
+Implemented in `output/visualize.py` (matplotlib, headless Agg backend),
+both saved as static PNGs and wired into the CLI's `--charts` flag:
+
+- **Tier Distribution Bar Chart** (#1) — `tier_distribution_bar()`.
+- **Per-Finding Radar Chart** (#2) — `finding_radar()`, plotting all six
+  dimension scores (missing dimensions show at their default value).
+
+Not yet implemented: the dependency-graph node-link diagram (#3), which
+needs dependency-graph *edges* the parser doesn't build yet, and the scatter
+plot (#4) and composite-score histogram (#5).
+
 ## Recommended Graph Types
 
 ### 1. Tier Distribution Bar Chart (overall posture)

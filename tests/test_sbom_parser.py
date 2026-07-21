@@ -248,9 +248,43 @@ def test_graph_has_one_node_per_component_and_no_edges(tmp_path):
 # --- format dispatch ---------------------------------------------------------
 
 
-def test_parse_sbom_raises_not_implemented_for_spdx(tmp_path):
+def test_parse_sbom_spdx_json_parses_packages(tmp_path):
     path = tmp_path / "sbom.spdx.json"
-    path.write_text(json.dumps({"spdxVersion": "SPDX-2.3", "packages": []}), encoding="utf-8")
+    path.write_text(
+        json.dumps(
+            {
+                "spdxVersion": "SPDX-2.3",
+                "packages": [
+                    {
+                        "SPDXID": "SPDXRef-Package-requests",
+                        "name": "requests",
+                        "versionInfo": "2.19.0",
+                        "externalRefs": [
+                            {
+                                "referenceCategory": "PACKAGE-MANAGER",
+                                "referenceType": "purl",
+                                "referenceLocator": "pkg:pypi/requests@2.19.0",
+                            }
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    components, graph = parse_sbom(str(path))
+    assert len(components) == 1
+    comp = components[0]
+    assert comp.name == "requests"
+    assert comp.version == "2.19.0"
+    assert comp.ecosystem == "PyPI"
+    assert list(graph.nodes) == ["SPDXRef-Package-requests"]
+    assert list(graph.edges) == []
+
+
+def test_parse_sbom_spdx_tag_value_not_implemented(tmp_path):
+    path = tmp_path / "sbom.spdx"
+    path.write_text("SPDXVersion: SPDX-2.3\nSPDXID: SPDXRef-DOCUMENT\n", encoding="utf-8")
     with pytest.raises(NotImplementedError):
         parse_sbom(str(path))
 

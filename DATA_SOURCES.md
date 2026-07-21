@@ -109,14 +109,33 @@ fallback described above (same per-package JSON payloads, no extra request).
 - **crates.io:** `https://crates.io/api/v1/crates/{crate}` → per-version
   `created_at`
 
+## GitHub Dependency-Graph SBOM
+
+**Used for:** the `--repo` input mode — scanning a repository by URL instead
+of supplying a local SBOM file (`sbom_scorer.data_sources.github_sbom`).
+
+- Endpoint: `GET https://api.github.com/repos/{owner}/{repo}/dependency-graph/sbom`
+- Returns an SPDX document (JSON) describing the repo's dependencies; the
+  tool extracts the inner `sbom` object and feeds it to the SPDX parser.
+- No external SBOM generator (syft/cdxgen) required — GitHub builds the SBOM
+  from its own dependency graph.
+- Auth: works unauthenticated for public repos but is heavily rate-limited.
+  Set `GITHUB_TOKEN` (or `GH_TOKEN`) in the environment to raise the limit
+  and to reach private repos; it's sent as a Bearer credential and never
+  logged. Accepts a full URL, `git@` form, or a bare `owner/repo`.
+
 ## SBOM Input Formats
 
-- **CycloneDX:** parsed via `cyclonedx-python-lib`. Key fields:
-  `dependencies[]` (graph edges), `components[]`, custom `properties[]` for
-  exposure-tier tagging.
-- **SPDX:** parsed via `spdx-tools`. Key fields: `relationships[]`
-  (equivalent graph edges, note SPDX uses a different relationship-type
-  vocabulary than CycloneDX's flat `dependsOn`).
+- **CycloneDX (JSON):** parsed via `cyclonedx-python-lib`. Fields consumed
+  today: `components[]` (name/version/ecosystem/purl), `externalReferences`
+  (type `vcs` → `Component.vcs_url`), and `metadata.component.properties[]`
+  (the `exposure:tier` tag). `dependencies[]` graph edges and XML encoding
+  are not parsed yet.
+- **SPDX (JSON):** parsed by `sbom_parser._parse_spdx`, covering the slice
+  GitHub's dependency-graph export produces — `packages[]` with a purl in
+  `externalRefs` (name/version/ecosystem derived from the purl, falling back
+  to `name`/`versionInfo`). `relationships[]` graph edges and SPDX tag-value
+  (non-JSON) encoding are not parsed yet.
 
 ## VEX
 

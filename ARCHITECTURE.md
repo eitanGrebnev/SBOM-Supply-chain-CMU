@@ -2,36 +2,57 @@
 
 ## Implementation Status
 
-The module layout below is scaffolded in `sbom_scorer/` — every file exists
-for the planned architecture. Four of six dimensions are implemented:
-Exploitability (batched EPSS lookups, CISA KEV override, joined source
-metadata, percentile scoring, daily local caches), Patch Latency (OSV.dev +
-package-registry release dates, fix-exists vs. no-fix-exists sub-cases),
-Maintainer Health (OSSF Scorecard per-check scores, reweighted sub-formula,
-GitHub repo resolution via `vcs_url` or registry metadata, weekly local
-cache), and Exposure Context (fixed SSVC-style exposure tiers, read from a
-CycloneDX SBOM's tagged exposure property, worst-case default when
-untagged/unrecognized). Reachability and Centrality still raise
-`NotImplementedError`.
+The tool now runs a **complete end-to-end scan**: SBOM in → tiered, scored
+findings + charts out. What's wired:
 
-`sbom_parser.py` is now partially implemented: `_parse_cyclonedx` handles
-JSON CycloneDX end-to-end for the slice Exposure Context and Maintainer
-Health need — `components[]` (name/version/ecosystem/purl),
-`externalReferences` (type `vcs`, → `Component.vcs_url`), and
-`metadata.component.properties[]` (the SBOM-wide `exposure:tier` tag, →
-every `Component.exposure_tier`). It returns a `DiGraph` with one node per
-component (keyed by CycloneDX bom-ref) but **no edges** —
-`dependencies[]` parsing, XML-encoded CycloneDX, and SPDX (any encoding)
-are still out of scope and raise `NotImplementedError`/are simply
-unimplemented; that's the next slice, for whoever ends up owning Centrality
-or full orchestration. Exploitability, Patch Latency, and Maintainer Health
-are each still tested against hand-built `Component` objects rather than a
-real parsed SBOM; Exposure Context and the parser slice above are tested
-against real (hand-built) CycloneDX JSON fixtures. `weights.yaml` holds the
-documented default weights/thresholds; `sbom_scorer/cli.py` has argument
-parsing wired but no orchestration pipeline. The package installs as a
-proper command-line tool (`sbom-scorer`) via `pyproject.toml` — see
-`README.md` for install and invocation instructions.
+- **Four of six dimensions** are implemented: Exploitability (batched EPSS
+  lookups, CISA KEV override, joined source metadata, percentile scoring,
+  daily local caches), Patch Latency (OSV.dev + package-registry release
+  dates, fix-exists vs. no-fix-exists sub-cases), Maintainer Health (OSSF
+  Scorecard per-check scores, reweighted sub-formula, GitHub repo resolution
+  via `vcs_url` or registry metadata, weekly local cache), and Exposure
+  Context (fixed SSVC-style exposure tiers from a CycloneDX SBOM's tagged
+  exposure property, worst-case default when untagged). **Reachability and
+  Centrality still raise `NotImplementedError`** — the composite substitutes
+  their documented missing-data defaults (Reachability 5/indeterminate,
+  Centrality 0) so scans complete without them, and they slot in additively
+  later.
+- **VEX gate** (`vex.py`): `apply_vex_gate` / `get_vex_status` /
+  `coerce_vex_status` implemented — `not_affected` suppresses a finding to
+  0/Informational before the weighted formula runs.
+- **Composite scorer** (`composite.py`): `load_weights` (from `weights.yaml`,
+  with fallback), `compute_composite` (VEX-gated weighted sum with
+  missing-data-default substitution), `bucket_tier`, and `score_finding` are
+  implemented.
+- **Output layer** (`output/`): `report.py` renders console / JSON / CSV
+  reports plus a tier summary; `visualize.py` renders the tier-distribution
+  bar chart and per-finding radar chart (matplotlib, headless Agg backend).
+  The dependency-graph node-link diagram is intentionally deferred — it needs
+  graph edges (see below).
+- **CLI orchestration** (`cli.py`): fully wired — obtain an SBOM (local file
+  or fetched from a GitHub repo), parse it, discover each component's CVEs
+  via OSV, batch-score Exploitability, score the other implemented
+  dimensions, apply the VEX gate, compute the composite + tier, and emit the
+  report (+ optional `--charts`).
+- **GitHub repo input** (`data_sources/github_sbom.py`): scan a repo by URL
+  or `owner/repo` instead of a local file — fetches the repo's
+  dependency-graph SBOM (SPDX JSON) via the GitHub API, no external SBOM
+  generator needed. `GITHUB_TOKEN`/`GH_TOKEN` env var raises rate limits and
+  reaches private repos.
+
+`sbom_parser.py` parses **JSON CycloneDX** (`_parse_cyclonedx`) and **JSON
+SPDX** (`_parse_spdx`, covering the slice GitHub's SBOM export produces:
+`packages[]` with a purl in `externalRefs`). Both populate
+`components[]` (name/version/ecosystem/purl), and CycloneDX additionally
+populates `vcs_url` (from `externalReferences`, type `vcs`) and
+`exposure_tier` (from `metadata.component.properties[]`). Both return a
+`DiGraph` with one node per component but **no edges** — `dependencies[]` /
+SPDX `relationships[]` parsing (needed for Centrality and the dependency-graph
+visualization), XML-encoded CycloneDX, and SPDX tag-value are still
+unimplemented and are the next slice. `weights.yaml` holds the documented
+default weights/thresholds/missing-data defaults. The package installs as a
+command-line tool (`sbom-scorer`) via `pyproject.toml` — see `README.md` for
+install and invocation instructions.
 
 ## Data Flow
 
@@ -96,7 +117,8 @@ sbom_scorer/
 │   │   ├── kev_client.py
 │   │   ├── scorecard_client.py
 │   │   ├── registry_client.py  # PyPI/npm/etc. release-date + repo-url lookups
-│   │   └── repo_resolver.py    # Component -> GitHub owner/repo, for Maintainer Health
+│   │   ├── repo_resolver.py    # Component -> GitHub owner/repo, for Maintainer Health
+│   │   └── github_sbom.py      # GitHub repo URL -> dependency-graph SBOM (SPDX)
 │   ├── callgraph/
 │   │   ├── __init__.py
 │   │   ├── python_callgraph.py # JARVIS/PyCG wrapper

@@ -7,7 +7,10 @@ research paper.
 
 ## Status
 
-Four of the six scoring dimensions are implemented:
+**The tool runs a complete end-to-end scan** (SBOM in → tiered, scored
+findings + charts out). Four of the six scoring dimensions are implemented,
+and the composite scorer, VEX gate, CLI orchestration, and report/chart
+output are all wired:
 
 - **Exploitability** — batched EPSS lookup, CISA KEV override metadata,
   percentile scoring, daily local JSON caches.
@@ -20,13 +23,20 @@ Four of the six scoring dimensions are implemented:
 - **Exposure Context** — fixed exposure tiers (`dev_only`/`internal`/
   `internet_facing`) read from a CycloneDX SBOM's tagged exposure property,
   defaulting to worst-case when untagged.
+- **Composite + VEX + output** — VEX gate (`not_affected` suppresses a
+  finding), weighted composite scoring with tier bucketing, and console /
+  JSON / CSV reports plus tier-distribution and radar charts.
 
-Reachability and Dependency Centrality are still scaffolded as stubs, as is
-end-to-end CLI orchestration. SBOM parsing (`sbom_parser.py`) is partially
-implemented: JSON CycloneDX components, exposure-tier tagging, and VCS
-external references are parsed, but dependency-graph *edges*, XML
-CycloneDX, and SPDX are not — see the module's docstring. The command-line
-tool below installs and runs, but does not yet run a complete scan.
+**Two input modes:** point the tool at a local SBOM file, or give it a
+GitHub repo (`--repo owner/repo`) and it fetches the repo's dependency-graph
+SBOM automatically.
+
+Reachability and Dependency Centrality are still scaffolded as stubs; the
+composite substitutes their documented missing-data defaults so scans
+complete, and they slot in additively later. SBOM parsing handles **JSON
+CycloneDX and JSON SPDX** (components, and for CycloneDX also exposure-tier
+tagging + VCS references); dependency-graph *edges*, XML CycloneDX, and SPDX
+tag-value are not parsed yet — see the module's docstring.
 
 ## How to Run It
 
@@ -87,18 +97,30 @@ sbom-scorer --help
 ```
 
 That prints the list of options — a good way to confirm the install
-worked. To actually run a scan (once the scoring logic is implemented),
-point it at an SBOM file:
+worked. To run a real scan, point it at an SBOM file:
 
 ```bash
 sbom-scorer path/to/your-sbom.json
 ```
 
+Or scan a GitHub repository directly — the tool fetches the repo's
+dependency-graph SBOM for you (no need to generate one first):
+
+```bash
+sbom-scorer --repo owner/repo
+```
+
+For private repos or to avoid GitHub rate limits, set a token first
+(`$env:GITHUB_TOKEN = "..."` on PowerShell, `export GITHUB_TOKEN=...` on
+Mac/Linux).
+
 Common options:
 
 | Option | What it does |
 |---|---|
-| `--codebase ./my-app` | Path to your application's source code, used for reachability analysis |
+| `--repo owner/repo` | Scan a GitHub repo by URL / `owner/repo` instead of a local SBOM file |
+| `--charts` | Also write tier-distribution and radar charts (PNG) to the output dir |
+| `--codebase ./my-app` | Path to your application's source code, used for reachability analysis (not used yet) |
 | `--output-dir ./results` | Where to save the report and charts |
 | `--format json` | Output format — `json`, `csv`, or `console` (default) |
 | `--version` | Print the installed version and exit |

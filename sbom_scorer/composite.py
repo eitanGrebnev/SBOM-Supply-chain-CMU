@@ -25,6 +25,52 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from sbom_scorer.vex import apply_vex_gate
+
+# The six dimensions, in the documented weighting order (SCORING_MODEL.md).
+_DIMENSION_ORDER = (
+    "reachability",
+    "exploitability",
+    "exposure",
+    "centrality",
+    "patch_latency",
+    "maintainer_health",
+)
+
+# Fallback weights, used only when weights.yaml is missing/incomplete.
+# Mirrors weights.yaml, which is the authoritative source (SCORING_MODEL.md).
+DEFAULT_WEIGHTS: dict[str, float] = {
+    "reachability": 0.25,
+    "exploitability": 0.20,
+    "exposure": 0.20,
+    "centrality": 0.15,
+    "patch_latency": 0.10,
+    "maintainer_health": 0.10,
+}
+
+# Substituted for any dimension whose score is absent on a Finding (e.g.
+# Reachability/Centrality before they're wired). Mirrors weights.yaml's
+# missing_data_defaults (SCORING_MODEL.md). patch_latency has no documented
+# default — it's always computed — so it falls back to 0.0 if ever missing.
+MISSING_DATA_DEFAULTS: dict[str, float] = {
+    "reachability": 5.0,
+    "exploitability": 5.0,
+    "exposure": 10.0,
+    "centrality": 0.0,
+    "patch_latency": 0.0,
+    "maintainer_health": 5.0,
+}
+
+# Lower bound (inclusive) of each tier on the 0-100 composite scale
+# (SCORING_MODEL.md). Ordered highest-first for bucket_tier.
+TIER_THRESHOLDS: tuple[tuple[float, str], ...] = (
+    (80.0, "Critical"),
+    (60.0, "High"),
+    (40.0, "Medium"),
+    (20.0, "Low"),
+    (0.0, "Informational"),
+)
+
 
 @dataclass
 class DimensionScore:
@@ -64,19 +110,38 @@ class Finding:
 
 
 def load_weights(path: str = "weights.yaml") -> dict[str, float]:
-    """Load dimension weights (and tier thresholds) from config.
+    """Load dimension weights from config.
 
     Args:
         path: Path to the weights.yaml config file.
 
     Returns:
         A dict mapping dimension name -> weight (e.g. "reachability": 0.25),
-        matching the values documented in SCORING_MODEL.md.
-
-    Raises:
-        NotImplementedError: Always, in this scaffolding stub.
+        matching the values documented in SCORING_MODEL.md. Falls back to
+        DEFAULT_WEIGHTS for any missing key, or entirely if the file is
+        absent.
     """
-    raise NotImplementedError
+    import yaml
+
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    except FileNotFoundError:
+        return dict(DEFAULT_WEIGHTS)
+
+    configured = data.get("weights") or {}
+    return {
+        dim: float(configured.get(dim, DEFAULT_WEIGHTS[dim]))
+        for dim in _DIMENSION_ORDER
+    }
+
+
+def _dimension_value(finding: Finding, dim: str) -> float:
+    """Return a finding's score for one dimension, or its missing-data default."""
+    ds = getattr(finding, dim, None)
+    if ds is not None:
+        return float(ds.score)
+    return MISSING_DATA_DEFAULTS.get(dim, 0.0)
 
 
 def compute_composite(finding: Finding, weights: dict[str, float]) -> float:
@@ -84,20 +149,25 @@ def compute_composite(finding: Finding, weights: dict[str, float]) -> float:
 
     Applies the VEX gate first (see sbom_scorer.vex.apply_vex_gate) — if the
     finding's VEX status is "not_affected", returns 0 without evaluating the
-    six dimensions.
+    six dimensions. Dimensions with no DimensionScore fall back to their
+    documented missing-data default (MISSING_DATA_DEFAULTS).
 
     Args:
-        finding: A Finding with all six DimensionScores populated (or VEX
+        finding: A Finding with its DimensionScores populated (or VEX
             status set to a suppressing value).
         weights: Dimension weights, typically from load_weights().
 
     Returns:
         The composite score, 0-100.
-
-    Raises:
-        NotImplementedError: Always, in this scaffolding stub.
     """
-    raise NotImplementedError
+    if apply_vex_gate(finding.vex_status):
+        return 0.0
+
+    weighted_sum = sum(
+        _dimension_value(finding, dim) * float(weights.get(dim, 0.0))
+        for dim in _DIMENSION_ORDER
+    )
+    return weighted_sum * 10.0
 
 
 def bucket_tier(composite_score: float) -> str:
@@ -111,20 +181,23 @@ def bucket_tier(composite_score: float) -> str:
 
     Returns:
         One of "Critical", "High", "Medium", "Low", "Informational".
-
-    Raises:
-        NotImplementedError: Always, in this scaffolding stub.
     """
-    raise NotImplementedError
+    for lower_bound, tier in TIER_THRESHOLDS:
+        if composite_score >= lower_bound:
+            return tier
+    return "Informational"
 
 
 def score_finding(finding: Finding, weights: dict[str, float]) -> Finding:
     """Run the full VEX-gate + composite + tier pipeline for one finding.
 
-    Convenience wrapper that populates finding.composite_score and
-    finding.tier in place and returns the finding.
-
-    Raises:
-        NotImplementedError: Always, in this scaffolding stub.
+    Populates finding.composite_score, finding.tier, and finding.
+    dimension_scores (a {dimension: score} snapshot including substituted
+    missing-data defaults) in place, and returns the finding.
     """
-    raise NotImplementedError
+    finding.composite_score = compute_composite(finding, weights)
+    finding.tier = bucket_tier(finding.composite_score)
+    finding.dimension_scores = {
+        dim: _dimension_value(finding, dim) for dim in _DIMENSION_ORDER
+    }
+    return finding

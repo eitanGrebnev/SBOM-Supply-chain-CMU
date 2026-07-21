@@ -145,6 +145,39 @@ _PURL_TYPE_TO_ECOSYSTEM = {
 }
 
 
+def _parse_purl(purl: str) -> tuple[str, str, str | None] | None:
+    """Split a Package URL into (ecosystem, name, version).
+
+    Handles the common cases seen in SPDX/CycloneDX SBOMs: a leading
+    ``pkg:<type>/`` prefix, an optional namespace segment, and an optional
+    ``@version`` suffix (plus trailing qualifiers/subpath, which are
+    stripped). Ecosystem casing is normalized to what the registry/OSV
+    clients expect via _PURL_TYPE_TO_ECOSYSTEM. Returns None if the string
+    isn't a purl.
+    """
+    from urllib.parse import unquote
+
+    if not purl or not purl.startswith("pkg:"):
+        return None
+    body = purl[len("pkg:"):].split("#", 1)[0].split("?", 1)[0]
+    purl_type, _, rest = body.partition("/")
+    ecosystem = _PURL_TYPE_TO_ECOSYSTEM.get(purl_type.lower(), purl_type)
+
+    version: str | None = None
+    name_part = rest
+    if "@" in rest:
+        name_part, _, version = rest.rpartition("@")
+
+    name_part = unquote(name_part)
+    # Maven's OSV/registry name is "groupId:artifactId"; npm keeps its
+    # "@scope/name" namespace form; others use the trailing segment as-is.
+    if ecosystem == "Maven":
+        name = name_part.replace("/", ":")
+    else:
+        name = name_part
+    return ecosystem, name, (version or None)
+
+
 def _parse_cyclonedx(path: str) -> tuple[list[Component], nx.DiGraph]:
     """Parse a JSON CycloneDX SBOM via cyclonedx-python-lib.
 
@@ -249,13 +282,66 @@ def _extract_exposure_tier(bom: Any) -> str | None:
 
 
 def _parse_spdx(path: str) -> tuple[list[Component], nx.DiGraph]:
-    """Parse an SPDX SBOM via spdx-tools.
+    """Parse a JSON SPDX SBOM into components + a (node-only) dependency graph.
 
-    Note SPDX's relationships[] uses a different relationship-type
-    vocabulary than CycloneDX's flat dependsOn — see DATA_SOURCES.md.
+    Covers the slice GitHub's dependency-graph SBOM export produces (see
+    sbom_scorer.data_sources.github_sbom): SPDX ``packages[]`` with a purl
+    in ``externalRefs`` (referenceType "purl"). Component name/version/
+    ecosystem are taken from the purl when present, falling back to SPDX
+    ``name``/``versionInfo``.
+
+    Like the CycloneDX slice, this returns one graph node per package but no
+    edges — SPDX ``relationships[]`` parsing (for Centrality) is a later
+    slice. SPDX tag-value (non-JSON) encoding is not supported.
 
     Raises:
-        NotImplementedError: Always — SPDX parsing is out of scope for this
-            slice (see module docstring).
+        NotImplementedError: If the file isn't JSON-encoded SPDX.
     """
-    raise NotImplementedError
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except json.JSONDecodeError as exc:
+        raise NotImplementedError(
+            "Only JSON-encoded SPDX is supported; SPDX tag-value input is "
+            "not implemented (see sbom_scorer.sbom_parser module docstring)."
+        ) from exc
+
+    packages = data.get("packages") or []
+    components: list[Component] = []
+    graph = nx.DiGraph()
+    for pkg in packages:
+        purl = None
+        for ref in pkg.get("externalRefs") or []:
+            if ref.get("referenceType") == "purl":
+                purl = ref.get("referenceLocator")
+                break
+
+        name = pkg.get("name") or ""
+        version = pkg.get("versionInfo")
+        ecosystem = ""
+        if purl:
+            parsed = _parse_purl(purl)
+            if parsed:
+                p_ecosystem, p_name, p_version = parsed
+                ecosystem = p_ecosystem or ecosystem
+                name = p_name or name
+                version = p_version or version
+
+        if not name:
+            continue
+
+        component = Component(
+            name=name,
+            version=version or "",
+            ecosystem=ecosystem,
+            purl=purl,
+            cve_ids=None,
+            exposure_tier=None,
+            vcs_url=None,
+        )
+        components.append(component)
+
+        node_id = pkg.get("SPDXID") or purl or f"{name}@{version}"
+        graph.add_node(str(node_id))
+
+    return components, graph
