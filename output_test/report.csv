@@ -1,4 +1,0 @@
-component_name,component_version,cve_id,composite_score,tier,vex_status,reachability_score,reachability_confidence,exploitability_score,exploitability_confidence,exposure_score,exposure_confidence,centrality_score,centrality_confidence,patch_latency_score,patch_latency_confidence,maintainer_health_score,maintainer_health_confidence
-requests,2.31.0,CVE-2024-47081,54.49999999999999,Medium,,5.0,indeterminate,3.0,high,10.0,high,0.0,high,10.0,high,5.999999999999999,medium
-requests,2.31.0,CVE-2024-35195,50.5,Medium,,5.0,indeterminate,1.0,high,10.0,high,0.0,high,10.0,high,5.999999999999999,medium
-requests,2.31.0,CVE-2026-25645,50.5,Medium,,5.0,indeterminate,1.0,high,10.0,high,0.0,high,10.0,high,5.999999999999999,medium
