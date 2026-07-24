@@ -21,9 +21,10 @@ both saved as static PNGs and wired into the CLI's `--charts` flag:
 - **Per-Finding Radar Chart** (#2) — `finding_radar()`, plotting all six
   dimension scores (missing dimensions show at their default value).
 
-Not yet implemented: the dependency-graph node-link diagram (#3), which
-needs dependency-graph *edges* the parser doesn't build yet, and the scatter
-plot (#4) and composite-score histogram (#5).
+Not yet implemented: the dependency-graph node-link diagram (#3) — the
+parser now builds dependency-graph edges, so the data this chart needs is
+available, it just hasn't been wired up — plus the scatter plot (#4) and
+composite-score histogram (#5).
 
 ## Recommended Graph Types
 

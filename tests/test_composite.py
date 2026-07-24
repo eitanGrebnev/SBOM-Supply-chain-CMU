@@ -87,3 +87,62 @@ def test_score_finding_populates_snapshot():
 def test_load_weights_missing_file_falls_back():
     weights = composite.load_weights("does-not-exist.yaml")
     assert weights == composite.DEFAULT_WEIGHTS
+
+
+def test_load_weights_accepts_custom_weights_summing_to_one(tmp_path):
+    path = tmp_path / "weights.yaml"
+    path.write_text(
+        "weights:\n"
+        "  reachability: 0.30\n"
+        "  exploitability: 0.20\n"
+        "  exposure: 0.20\n"
+        "  centrality: 0.10\n"
+        "  patch_latency: 0.10\n"
+        "  maintainer_health: 0.10\n",
+        encoding="utf-8",
+    )
+    weights = composite.load_weights(str(path))
+    assert weights["reachability"] == 0.30
+    assert sum(weights.values()) == pytest.approx(1.0)
+
+
+def test_load_weights_tolerates_float_rounding_noise(tmp_path):
+    # 1/3 * 3 in float doesn't hit 1.0 exactly; should still be accepted.
+    path = tmp_path / "weights.yaml"
+    path.write_text(
+        "weights:\n"
+        "  reachability: 0.3333333333333333\n"
+        "  exploitability: 0.3333333333333333\n"
+        "  exposure: 0.3333333333333334\n"
+        "  centrality: 0.0\n"
+        "  patch_latency: 0.0\n"
+        "  maintainer_health: 0.0\n",
+        encoding="utf-8",
+    )
+    weights = composite.load_weights(str(path))
+    assert sum(weights.values()) == pytest.approx(1.0)
+
+
+def test_load_weights_rejects_weights_not_summing_to_one(tmp_path):
+    path = tmp_path / "weights.yaml"
+    path.write_text(
+        "weights:\n"
+        "  reachability: 0.30\n"  # typo'd up from 0.25, rest not rebalanced
+        "  exploitability: 0.20\n"
+        "  exposure: 0.20\n"
+        "  centrality: 0.15\n"
+        "  patch_latency: 0.10\n"
+        "  maintainer_health: 0.10\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="sum to"):
+        composite.load_weights(str(path))
+
+
+def test_load_weights_rejects_partial_override_that_breaks_sum(tmp_path):
+    # Only overriding one dimension without rebalancing the rest is the
+    # realistic failure mode this guards against.
+    path = tmp_path / "weights.yaml"
+    path.write_text("weights:\n  reachability: 0.5\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="sum to"):
+        composite.load_weights(str(path))

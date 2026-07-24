@@ -61,6 +61,13 @@ MISSING_DATA_DEFAULTS: dict[str, float] = {
     "maintainer_health": 5.0,
 }
 
+# Absolute tolerance for the weights-sum-to-1.0 check in load_weights,
+# loose enough to absorb float round-off from YAML parsing / repeated
+# division but tight enough to catch a real typo (e.g. an extra digit, or
+# a dimension key misspelled and silently defaulted alongside a leftover
+# custom value).
+WEIGHT_SUM_TOLERANCE = 1e-6
+
 # Lower bound (inclusive) of each tier on the 0-100 composite scale
 # (SCORING_MODEL.md). Ordered highest-first for bucket_tier.
 TIER_THRESHOLDS: tuple[tuple[float, str], ...] = (
@@ -120,6 +127,16 @@ def load_weights(path: str = "weights.yaml") -> dict[str, float]:
         matching the values documented in SCORING_MODEL.md. Falls back to
         DEFAULT_WEIGHTS for any missing key, or entirely if the file is
         absent.
+
+    Raises:
+        ValueError: If the resolved weights don't sum to 1.0 (within
+            WEIGHT_SUM_TOLERANCE). compute_composite's `* 10` scaling to a
+            0-100 score is only meaningful if the six weights are a true
+            partition of 1.0 (SCORING_MODEL.md) — silently scoring against
+            a mis-summed set (e.g. a typo'd weight, or a custom weights.yaml
+            for the H2 sensitivity analysis that forgot to rebalance the
+            rest) would corrupt every finding's composite score without any
+            visible symptom, so this fails loud instead.
     """
     import yaml
 
@@ -127,13 +144,27 @@ def load_weights(path: str = "weights.yaml") -> dict[str, float]:
         with open(path, encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
     except FileNotFoundError:
-        return dict(DEFAULT_WEIGHTS)
+        weights = dict(DEFAULT_WEIGHTS)
+    else:
+        configured = data.get("weights") or {}
+        weights = {
+            dim: float(configured.get(dim, DEFAULT_WEIGHTS[dim]))
+            for dim in _DIMENSION_ORDER
+        }
 
-    configured = data.get("weights") or {}
-    return {
-        dim: float(configured.get(dim, DEFAULT_WEIGHTS[dim]))
-        for dim in _DIMENSION_ORDER
-    }
+    _validate_weights_sum(weights, path)
+    return weights
+
+
+def _validate_weights_sum(weights: dict[str, float], source: str) -> None:
+    """Raise if `weights` doesn't sum to 1.0 within WEIGHT_SUM_TOLERANCE."""
+    total = sum(weights.values())
+    if abs(total - 1.0) > WEIGHT_SUM_TOLERANCE:
+        raise ValueError(
+            f"Dimension weights loaded from {source!r} sum to {total!r}, "
+            f"not 1.0 ({weights}). Fix the weights in that file so the six "
+            "dimensions sum to 1.0 before scoring — see SCORING_MODEL.md."
+        )
 
 
 def _dimension_value(finding: Finding, dim: str) -> float:

@@ -20,7 +20,12 @@ general vulnerability lookup source.
   ```json
   {"commit": "6879efc2c1596d11a6a6ad296f80063b558d5e0f"}
   ```
-- Batch endpoint: `POST /v1/querybatch`
+- Batch endpoint: `POST /v1/querybatch` — same `queries: [...]` list of the
+  single-query payload shape above, but each result's `vulns[]` entries
+  come back **abbreviated to just `id` and `modified`** (no `published`,
+  `affected[].ranges[].events`, `references[]`, or `aliases`). Enough to
+  know a package has *some* hit, not enough to resolve a CVE alias or get
+  fix/disclosure detail — still need the single-query endpoint for that.
 - Response includes `published` date, `affected[].ranges[].events` (contains
   `introduced`/`fixed` version markers), and `references[]` (look for
   `type: "FIX"` to get the fix commit URL).
@@ -29,6 +34,21 @@ general vulnerability lookup source.
   32MiB over HTTP/1.1 — use HTTP/2 for large SBOM scans.
 - No fixed-version release *timestamp* is provided directly — resolve that
   via the package registry (below).
+
+**Implementation note:** `osv_client.py` implements both endpoints —
+`query_by_package()` (single, full detail, in-process memoized) and
+`query_batch()` (batch, abbreviated). `cli.py`'s CVE-discovery step
+(`_batch_prefilter_candidates`) uses the batch endpoint as a cheap first
+pass across the whole SBOM, then only runs the slower full-detail
+`query_by_package` call on components the batch pass actually flagged —
+most real dependency trees are mostly clean, so this cuts the number of
+full-detail OSV round-trips substantially (e.g. 218 components down to the
+~30 that actually had a hit, in one real test run). If the batch call
+itself fails, the prefilter fails open (checks every component
+individually, same as before this existed) rather than risking an entire
+SBOM silently looking clean because of one failed request — see
+`query_batch`'s docstring for why it deliberately raises on failure
+instead of swallowing the error like `query_by_package` does.
 
 ## FIRST.org EPSS API
 
@@ -85,10 +105,16 @@ general vulnerability lookup source.
   key the same as an explicit `-1`: redistribute its weight.
 - If a repo isn't indexed, the API returns a 404/no-data — treat as
   "no Scorecard data," not "worst score."
-- Fallback for un-indexed repos: run the Scorecard CLI/Docker image directly
-  against the repo (requires a GitHub personal access token, slower, only
-  worth doing if the dependency is important enough to justify it). Not yet
-  implemented (`scorecard_client.run_scorecard_cli` is still a stub).
+- Fallback for un-indexed repos: `scorecard_client.run_scorecard_cli` runs
+  the Scorecard CLI (preferring a local `scorecard` binary on PATH, falling
+  back to `docker run gcr.io/openssf/scorecard`) directly against the repo.
+  Requires a GitHub PAT (`GITHUB_AUTH_TOKEN`/`GH_TOKEN` env var, or passed
+  explicitly) and is much slower than the REST API since it clones and
+  statically analyzes the repo rather than reading a precomputed weekly
+  result — deliberately **not** auto-invoked by `maintainer_health.py` when
+  `get_scorecard()` returns "not indexed"; it's an opt-in fallback callers
+  reach for only when a specific dependency is important enough to justify
+  the latency, per the tradeoff described above.
 
 ## Package Registries
 
@@ -102,12 +128,30 @@ fallback described above (same per-package JSON payloads, no extra request).
   for repo URL.
 - **npm:** `https://registry.npmjs.org/{package}` → `time[version]` for
   release date, top-level `repository` field for repo URL.
-- **Maven Central:** query via `search.maven.org` REST API, timestamp field
-  in the returned doc
+- **Maven Central:** `search.maven.org`'s solrsearch REST API (`core=gav`,
+  `q=g:"{groupId}" AND a:"{artifactId}" AND v:"{version}"`) → `timestamp`
+  (epoch ms) for release date. No repo URL in the search index though — for
+  that, the same API (without the `v:` filter) finds the `latestVersion`,
+  then the artifact's actual POM is fetched from
+  `repo1.maven.org/maven2/{group-path}/{artifactId}/{version}/...pom` and
+  parsed for `<scm><url>`, falling back to `<url>`. `package` is passed as
+  "groupId:artifactId" (matching `sbom_parser`'s Maven component naming —
+  CycloneDX's own `name` field alone is only the artifactId).
 - **RubyGems:** `https://rubygems.org/api/v1/versions/{gem}.json` → per-version
-  `created_at`
+  `created_at` for release date; `https://rubygems.org/api/v1/gems/{gem}.json`
+  → `source_code_uri` (preferred) or `homepage_uri` for repo URL.
 - **crates.io:** `https://crates.io/api/v1/crates/{crate}` → per-version
-  `created_at`
+  `created_at` for release date, `crate.repository` (preferred) or
+  `crate.homepage` for repo URL. crates.io's API policy requires a
+  descriptive `User-Agent` on every request (a generic one can be
+  rate-limited/blocked) — both lookups send one.
+
+**Implementation note:** all five registries' release-date and repo-URL
+lookups are implemented (`registry_client.py`) — Maven/RubyGems/crates.io
+were the last three filled in, since their absence meant Patch Latency
+silently always used the disclosure-date "no fix resolvable" formula for
+those ecosystems even when OSV reported a real fix version, and Maintainer
+Health's repo-resolution fallback never worked for them either.
 
 ## GitHub Dependency-Graph SBOM
 
@@ -126,16 +170,20 @@ of supplying a local SBOM file (`sbom_scorer.data_sources.github_sbom`).
 
 ## SBOM Input Formats
 
-- **CycloneDX (JSON):** parsed via `cyclonedx-python-lib`. Fields consumed
-  today: `components[]` (name/version/ecosystem/purl), `externalReferences`
-  (type `vcs` → `Component.vcs_url`), and `metadata.component.properties[]`
-  (the `exposure:tier` tag). `dependencies[]` graph edges and XML encoding
-  are not parsed yet.
-- **SPDX (JSON):** parsed by `sbom_parser._parse_spdx`, covering the slice
-  GitHub's dependency-graph export produces — `packages[]` with a purl in
-  `externalRefs` (name/version/ecosystem derived from the purl, falling back
-  to `name`/`versionInfo`). `relationships[]` graph edges and SPDX tag-value
-  (non-JSON) encoding are not parsed yet.
+- **CycloneDX (JSON or XML):** parsed via `cyclonedx-python-lib` — content
+  (not file extension) decides which decoder runs; both deserialize into the
+  same `Bom` object, walked identically by `_build_from_cyclonedx_bom`.
+  Fields consumed: `components[]` (name/version/ecosystem/purl),
+  `externalReferences` (type `vcs` → `Component.vcs_url`),
+  `metadata.component.properties[]` (the `exposure:tier` tag), `dependencies[]`
+  graph edges, and `vulnerabilities[]`/VEX (see below).
+- **SPDX (JSON or tag-value):** JSON is hand-parsed by `sbom_parser._parse_spdx`,
+  covering the slice GitHub's dependency-graph export produces —
+  `packages[]` with a purl in `externalRefs` (name/version/ecosystem derived
+  from the purl, falling back to `name`/`versionInfo`) and `relationships[]`
+  graph edges. Tag-value is parsed via spdx-tools' `tagvalue_parser` into a
+  typed `Document`, then mapped through the same purl-first logic in
+  `_build_from_spdx_document`.
 
 ## VEX
 
@@ -146,6 +194,19 @@ of supplying a local SBOM file (`sbom_scorer.data_sources.github_sbom`).
   `affected`, `not_affected`, `fixed`, `under_investigation`. Only
   `not_affected` triggers the score-suppression override described in
   `SCORING_MODEL.md`.
+
+**Implementation note:** `sbom_scorer.sbom_parser._apply_vulnerabilities`
+parses CycloneDX `vulnerabilities[]` (JSON only) — resolving a CVE id from
+`.id` or a CVE-shaped alias in `.references[]`, matching `affects[].ref`
+against parsed components, and mapping each `analysis.state` onto this
+vocabulary (CycloneDX's own `ImpactAnalysisState` terms differ slightly:
+`not_affected`/`false_positive` -> `not_affected`, `exploitable` ->
+`affected`, `resolved`/`resolved_with_pedigree` -> `fixed`, `in_triage` ->
+`under_investigation`) into `Component.vex_statuses`, which
+`sbom_scorer.vex.get_vex_status` reads directly. SPDX's
+security-vulnerability extension and standalone CSAF are not parsed —
+GitHub's dependency-graph SBOM export (this project's SPDX source) doesn't
+carry either.
 
 ---
 

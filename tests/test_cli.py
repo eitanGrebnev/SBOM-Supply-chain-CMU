@@ -54,6 +54,16 @@ def mocked_network(monkeypatch):
             "vulns": [{"id": "GHSA-xxxx", "aliases": ["CVE-2023-0001"]}]
         },
     )
+    # The CVE-discovery batch prefilter (cli._batch_prefilter_candidates)
+    # runs before query_by_package now — needs its own mock so it reports a
+    # hit for every queried component, matching query_by_package's mock
+    # above, or the prefilter would filter every component out before
+    # query_by_package ever gets called.
+    monkeypatch.setattr(
+        osv_client,
+        "query_batch",
+        lambda queries: [{"vulns": [{"id": "GHSA-xxxx", "modified": "2024-01-01T00:00:00Z"}]}] * len(queries),
+    )
 
     def fake_exploitabilities(cve_ids, *a, **k):
         return {

@@ -5,54 +5,104 @@
 The tool now runs a **complete end-to-end scan**: SBOM in → tiered, scored
 findings + charts out. What's wired:
 
-- **Four of six dimensions** are implemented: Exploitability (batched EPSS
+- **All six dimensions** are implemented: Exploitability (batched EPSS
   lookups, CISA KEV override, joined source metadata, percentile scoring,
   daily local caches), Patch Latency (OSV.dev + package-registry release
   dates, fix-exists vs. no-fix-exists sub-cases), Maintainer Health (OSSF
   Scorecard per-check scores, reweighted sub-formula, GitHub repo resolution
-  via `vcs_url` or registry metadata, weekly local cache), and Exposure
-  Context (fixed SSVC-style exposure tiers from a CycloneDX SBOM's tagged
-  exposure property, worst-case default when untagged). **Reachability and
-  Centrality still raise `NotImplementedError`** — the composite substitutes
-  their documented missing-data defaults (Reachability 5/indeterminate,
-  Centrality 0) so scans complete without them, and they slot in additively
-  later.
+  via `vcs_url` or registry metadata, weekly local cache), Exposure Context
+  (fixed SSVC-style exposure tiers from a CycloneDX SBOM's tagged exposure
+  property, worst-case default when untagged), Centrality (log2-normalized
+  reachable-dependents + betweenness centrality over the parsed dependency
+  graph, averaged — see below), and Reachability (import check + a
+  same-codebase static call graph; needs `--codebase` to run, otherwise
+  falls back to its missing-data default like Centrality does when the
+  graph has no edges). Two call-graph backends: Python components use an
+  in-process `ast` walker; Maven/Java components shell out to the `codeql`
+  CLI (`callgraph/java_callgraph.py`) — both degrade to indeterminate
+  rather than raising if the graph can't be built (no `codeql` binary
+  installed, unparseable source, etc.). The vulnerable-function-to-check
+  itself is identified by fetching the CVE's fix commit's diff and reading
+  the changed function names off the diff's hunk-header context lines
+  (`dimensions/reachability._identify_vulnerable_function`).
 - **VEX gate** (`vex.py`): `apply_vex_gate` / `get_vex_status` /
   `coerce_vex_status` implemented — `not_affected` suppresses a finding to
-  0/Informational before the weighted formula runs.
+  0/Informational before the weighted formula runs. Fed by real SBOM data:
+  `sbom_parser._apply_vulnerabilities` reads CycloneDX `vulnerabilities[]`
+  (CVE id from `.id` or a CVE-shaped alias in `.references[]`, matched to
+  affected components via `affects[].ref`) and maps each `analysis.state`
+  onto this project's VEX vocabulary (`not_affected`/`false_positive` ->
+  `not_affected`, `exploitable` -> `affected`, `resolved(_with_pedigree)` ->
+  `fixed`, `in_triage` -> `under_investigation`). No embedded
+  `vulnerabilities[]` entry for a CVE means no VEX statement, so normal
+  scoring proceeds — SPDX has no equivalent embedded-VEX field.
 - **Composite scorer** (`composite.py`): `load_weights` (from `weights.yaml`,
-  with fallback), `compute_composite` (VEX-gated weighted sum with
+  with fallback, and validated to sum to 1.0 within float tolerance —
+  raises `ValueError` otherwise rather than silently scoring against a
+  mis-summed set), `compute_composite` (VEX-gated weighted sum with
   missing-data-default substitution), `bucket_tier`, and `score_finding` are
   implemented.
-- **Output layer** (`output/`): `report.py` renders console / JSON / CSV
-  reports plus a tier summary; `visualize.py` renders the tier-distribution
-  bar chart and per-finding radar chart (matplotlib, headless Agg backend).
-  The dependency-graph node-link diagram is intentionally deferred — it needs
-  graph edges (see below).
+- **Output layer** (`output/`): `report.py` renders console (`render_console`)
+  / JSON (`write_json`) / CSV (`write_csv`) reports plus a tier summary and
+  a one-line `explain_finding`; `visualize.py` renders the tier-distribution
+  bar chart (`tier_distribution_bar`) and per-finding radar chart
+  (`finding_radar`), matplotlib, headless Agg backend. The dependency-graph
+  node-link diagram, dimension scatter plot, and composite histogram are
+  intentionally still deferred/stubbed.
 - **CLI orchestration** (`cli.py`): fully wired — obtain an SBOM (local file
   or fetched from a GitHub repo), parse it, discover each component's CVEs
-  via OSV, batch-score Exploitability, score the other implemented
-  dimensions, apply the VEX gate, compute the composite + tier, and emit the
-  report (+ optional `--charts`).
+  (embedded `vulnerabilities[]` first, OSV lookup otherwise), batch-score
+  Exploitability, batch-score Centrality (one betweenness pass reused across
+  all affected components), score Reachability when `--codebase` is given,
+  score the remaining dimensions, apply the VEX gate, compute the composite
+  + tier, and emit the report (+ optional `--charts`).
 - **GitHub repo input** (`data_sources/github_sbom.py`): scan a repo by URL
   or `owner/repo` instead of a local file — fetches the repo's
   dependency-graph SBOM (SPDX JSON) via the GitHub API, no external SBOM
   generator needed. `GITHUB_TOKEN`/`GH_TOKEN` env var raises rate limits and
   reaches private repos.
 
-`sbom_parser.py` parses **JSON CycloneDX** (`_parse_cyclonedx`) and **JSON
-SPDX** (`_parse_spdx`, covering the slice GitHub's SBOM export produces:
-`packages[]` with a purl in `externalRefs`). Both populate
-`components[]` (name/version/ecosystem/purl), and CycloneDX additionally
-populates `vcs_url` (from `externalReferences`, type `vcs`) and
-`exposure_tier` (from `metadata.component.properties[]`). Both return a
-`DiGraph` with one node per component but **no edges** — `dependencies[]` /
-SPDX `relationships[]` parsing (needed for Centrality and the dependency-graph
-visualization), XML-encoded CycloneDX, and SPDX tag-value are still
-unimplemented and are the next slice. `weights.yaml` holds the documented
-default weights/thresholds/missing-data defaults. The package installs as a
-command-line tool (`sbom-scorer`) via `pyproject.toml` — see `README.md` for
-install and invocation instructions.
+`sbom_parser.py` parses **CycloneDX, JSON or XML** (`_parse_cyclonedx` +
+`_build_from_cyclonedx_bom` — content, not file extension, decides which;
+both encodings deserialize into the same cyclonedx-python-lib `Bom` object,
+walked identically) and **SPDX, JSON or tag-value** (`_parse_spdx` +
+`_build_from_spdx_document` — JSON is hand-parsed to cover the slice
+GitHub's SBOM export produces: `packages[]` with a purl in `externalRefs`;
+tag-value is parsed via spdx-tools' `tagvalue_parser`, since hand-rolling
+that colon-delimited format safely isn't practical, then mapped through
+the same purl-first field logic). Both formats populate `components[]`
+(name/version/ecosystem/purl/`bom_ref`), and CycloneDX additionally
+populates `vcs_url` (from `externalReferences`, type `vcs`), `exposure_tier`
+(from `metadata.component.properties[]`), and `cve_ids`/`vex_statuses` (from
+`vulnerabilities[]`, see above). All four format/encoding combinations
+return a `DiGraph` with one node per component *and* "depends on" edges
+(CycloneDX `dependencies[]` / SPDX `relationships[]` of type `DEPENDS_ON`)
+— each `Component.bom_ref` matches its node id in the graph, for
+Centrality (and eventually the dependency-graph visualization) to key off
+of. `weights.yaml` holds the documented default weights/thresholds/
+missing-data defaults. The package installs as a command-line tool
+(`sbom-scorer`) via `pyproject.toml` — see `README.md` for install and
+invocation instructions.
+
+Known loose ends not covered above: `sbom_scorer/centrality.py` (repo root)
+is an orphaned, unwired duplicate of `dimensions/centrality.py` using a
+different (non-DIMENSIONS.md) normalization formula — dead code, not a
+second code path in use. Centrality's two sub-scores are combined via a
+simple average; DIMENSIONS.md flags max as a documented alternative still
+worth testing empirically. Reachability's Python call graph is a
+lightweight custom AST walker (by bare function name), not the JARVIS/PyCG
+tooling `callgraph/python_callgraph.py` was scaffolded for — that module is
+still an unimplemented stub and unused by `dimensions/reachability.py`.
+Java's `callgraph/java_callgraph.py` counterpart, by contrast, is now real
+(shells out to the `codeql` CLI — see Implementation Status above), but is
+untested against an actual CodeQL install/database since neither is
+available in the dev sandbox this was built in; treat it as implemented-but-
+unvalidated until run against a real Java codebase. `patch_latency.py` is
+implemented and wired but has no dedicated test module yet, unlike the
+other five dimensions.
+SPDX's non-standard security-vulnerability extension (SPDX's closest
+equivalent to CycloneDX's `vulnerabilities[]`/VEX) is still unparsed —
+GitHub's dependency-graph SBOM export doesn't emit it anyway.
 
 ## Data Flow
 

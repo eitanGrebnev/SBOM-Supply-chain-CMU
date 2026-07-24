@@ -80,8 +80,8 @@ Full definitions and implementation approach per dimension: see `DIMENSIONS.md`.
 ## Tech Stack Assumptions
 
 - Python 3.11+
-- SBOM formats: CycloneDX (primary), SPDX (secondary) — JSON encodings of
-  both are parsed today; XML CycloneDX and SPDX tag-value are not yet
+- SBOM formats: CycloneDX (primary), SPDX (secondary) — both JSON and their
+  alternate encodings (XML CycloneDX, SPDX tag-value) are parsed today
 - SBOM input: a local SBOM file, or a GitHub repo (URL / `owner/repo`) whose
   dependency-graph SBOM is fetched automatically (see `DATA_SOURCES.md`)
 - Graph library: NetworkX

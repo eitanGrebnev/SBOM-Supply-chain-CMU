@@ -7,12 +7,13 @@ Installed as the `sbom-scorer` command (see pyproject.toml
 
 Pipeline (ARCHITECTURE.md data flow): obtain an SBOM (from a file or by
 fetching a GitHub repo's dependency-graph SBOM) -> parse -> discover each
-component's CVEs (OSV) -> score the implemented dimensions -> apply the VEX
-gate -> weighted composite + tier -> emit report (+ charts).
+component's CVEs (OSV) -> score all six dimensions -> apply the VEX gate ->
+weighted composite + tier -> emit report (+ charts).
 
-Reachability and Centrality aren't wired yet; the composite substitutes
-their documented missing-data defaults (see sbom_scorer.composite). They
-slot in additively later without changing this pipeline.
+Centrality is scored from the SBOM's parsed dependency graph automatically.
+Reachability additionally needs a codebase to analyze — pass --codebase to
+score it; without that flag it falls back to the composite's missing-data
+default (see sbom_scorer.composite) rather than being skipped as an error.
 """
 
 from __future__ import annotations
@@ -50,7 +51,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "the environment to raise rate limits / reach private repos).",
     )
     parser.add_argument("--weights", default="weights.yaml", help="Path to weights config.")
-    parser.add_argument("--codebase", default=None, help="Path to application source for reachability analysis (not yet used).")
+    parser.add_argument(
+        "--codebase",
+        default=None,
+        help="Path to application source for Reachability analysis (AST import "
+        "check + static call graph, DIMENSIONS.md #1). Without this, "
+        "Reachability falls back to the composite's missing-data default.",
+    )
     parser.add_argument("--output-dir", default="./output", help="Directory for report + chart output.")
     parser.add_argument(
         "--format",
@@ -81,6 +88,26 @@ def _get_version() -> str:
 def _log(msg: str) -> None:
     """Emit progress to stderr so it doesn't pollute stdout report output."""
     print(msg, file=sys.stderr)
+
+
+def _progress(iterable, *, desc: str, total: int | None = None):
+    """Wrap a slow, network-bound loop with a stderr progress bar.
+
+    Used for the two per-component/per-finding loops that make one HTTP
+    call per item (OSV CVE discovery, then Maintainer Health/Patch Latency/
+    Reachability scoring) — the parts of a scan where a large SBOM can
+    otherwise sit silently for minutes with no feedback that anything is
+    happening. Renders on stderr (tqdm's default) so it never mixes into
+    stdout report output (console format prints the report to stdout;
+    json/csv write to a file) — same reasoning as _log. Degrades to a
+    plain, silent iterator if tqdm isn't installed, so a scan never fails
+    just because of a missing optional UX dependency.
+    """
+    try:
+        from tqdm import tqdm
+    except ImportError:
+        return iterable
+    return tqdm(iterable, desc=desc, total=total, unit="item", file=sys.stderr, leave=False)
 
 
 def _safe_dimension(fn, *, default: float, confidence: str = "default") -> DimensionScore:
@@ -132,7 +159,53 @@ def _discover_cves(component) -> list[str]:
         if cve and cve not in seen:
             seen.add(cve)
             cves.append(cve)
+
     return cves
+
+
+def _batch_prefilter_candidates(components) -> list:
+    """Narrow `components` down to the ones worth a full OSV detail query.
+
+    Most real dependency trees are mostly clean — components with no known
+    vulnerabilities at all — and _discover_cves' full query_by_package call
+    (needed for CVE-alias resolution and later per-finding detail) is the
+    slowest step in a scan. This runs one cheap OSV /v1/querybatch pass
+    first (abbreviated results — just enough to know "has any hit or not",
+    not full detail) and returns only the components that: already have
+    embedded cve_ids (skip the batch check, _discover_cves handles them for
+    free), are missing ecosystem/version (same — _discover_cves would
+    short-circuit anyway, no point batch-checking), or came back with at
+    least one hit in the batch pass.
+
+    If the batch call itself fails, fails open: returns every component
+    that would otherwise have been batch-checked, so a network hiccup here
+    just loses the speed-up, not any findings.
+    """
+    from sbom_scorer.data_sources import osv_client
+
+    free_candidates = [
+        c for c in components if c.cve_ids or not c.ecosystem or not c.version
+    ]
+    queryable = [c for c in components if not c.cve_ids and c.ecosystem and c.version]
+    if not queryable:
+        return free_candidates
+
+    queries = [
+        {"package": {"name": c.name, "ecosystem": c.ecosystem}, "version": c.version}
+        for c in queryable
+    ]
+    try:
+        results = osv_client.query_batch(queries)
+    except Exception as exc:  # noqa: BLE001
+        _log(f"  ! OSV batch prefilter failed ({exc!r}); checking every component individually.")
+        return free_candidates + queryable
+
+    hits = [c for c, result in zip(queryable, results) if (result or {}).get("vulns")]
+    _log(
+        f"OSV batch prefilter: {len(hits)} of {len(queryable)} component(s) have a "
+        f"potential match; resolving full detail for those."
+    )
+    return free_candidates + hits
 
 
 def _safe_batch_exploitability(cve_ids, score_exploitabilities) -> dict:
@@ -145,18 +218,55 @@ def _safe_batch_exploitability(cve_ids, score_exploitabilities) -> dict:
         return {cve: DimensionScore(5.0, "default") for cve in cve_ids}
 
 
-def _gather_findings(components) -> list[Finding]:
-    """Build (un-composited) Findings for every affected component+CVE pair."""
+def _safe_centrality_batch(component_ids, dependency_graph) -> dict:
+    """Batch-score centrality, degrading to the isolated-node default on failure."""
+    from sbom_scorer.dimensions import centrality
+
+    if not component_ids:
+        return {}
+    try:
+        return centrality.score_all_components(component_ids, dependency_graph)
+    except Exception as exc:  # noqa: BLE001
+        _log(f"  ! Centrality batch failed ({exc!r}); using defaults.")
+        return {cid: DimensionScore(0.0, "default") for cid in component_ids}
+
+
+def _gather_findings(components, dependency_graph=None, codebase_path=None) -> list[Finding]:
+    """Build (un-composited) Findings for every affected component+CVE pair.
+
+    Args:
+        components: Parsed SBOM components (sbom_scorer.sbom_parser.Component).
+        dependency_graph: The SBOM's dependency graph (sbom_scorer.sbom_parser
+            .parse_sbom's second return value) — used to score Centrality
+            (DIMENSIONS.md #4) via each component's bom_ref. If None/empty,
+            Centrality falls back to the composite's missing-data default.
+        codebase_path: Path to application source, for Reachability
+            (DIMENSIONS.md #1). If None, Reachability falls back to the
+            composite's missing-data default (5.0/indeterminate) instead of
+            being scored, matching --codebase's "not yet used" default.
+    """
+    import networkx as nx
+
     from sbom_scorer.dimensions.exploitability import score_exploitabilities
     from sbom_scorer.dimensions.exposure import score_exposure
     from sbom_scorer.dimensions.maintainer_health import score_maintainer_health
     from sbom_scorer.dimensions.patch_latency import score_patch_latency
+    from sbom_scorer.dimensions.reachability import score_reachability
     from sbom_scorer.vex import get_vex_status
 
-    # 1. Discover CVEs per component.
+    if dependency_graph is None:
+        dependency_graph = nx.DiGraph()
+
+    # 1. Discover CVEs per component. A cheap OSV batch pass first narrows
+    # down to components that actually have something (most real
+    # dependency trees are mostly clean), then only those go through the
+    # full per-component detail call (_discover_cves) — usually the
+    # slowest step for a large SBOM otherwise, so this also cuts down what
+    # the progress bar has to sit through.
+    candidates = _batch_prefilter_candidates(components)
     component_cves: list[tuple] = []
     all_cves: set[str] = set()
-    for component in components:
+    for component in _progress(candidates, desc="Discovering CVEs", total=len(candidates)):
         cves = _discover_cves(component)
         if cves:
             component_cves.append((component, cves))
@@ -169,11 +279,19 @@ def _gather_findings(components) -> list[Finding]:
     # 2. One batched EPSS+KEV pass for all CVEs (Exploitability).
     exploit_results = _safe_batch_exploitability(sorted(all_cves), score_exploitabilities)
 
-    # 3. Maintainer Health is per-component — compute once and reuse.
+    # 3. Centrality only depends on graph structure — score every affected
+    # component once, up front, reusing one betweenness-centrality pass
+    # across the whole batch (see dimensions.centrality.score_all_components).
+    affected_component_ids = [
+        component.bom_ref for component, _cves in component_cves if component.bom_ref
+    ]
+    centrality_results = _safe_centrality_batch(affected_component_ids, dependency_graph)
+
+    # 4. Maintainer Health is per-component — compute once and reuse.
     maint_cache: dict[int, DimensionScore] = {}
 
     findings: list[Finding] = []
-    for component, cves in component_cves:
+    for component, cves in _progress(component_cves, desc="Scoring findings", total=len(component_cves)):
         if id(component) not in maint_cache:
             maint_cache[id(component)] = _safe_dimension(
                 lambda c=component: score_maintainer_health(c), default=5.0
@@ -181,6 +299,7 @@ def _gather_findings(components) -> list[Finding]:
         exposure = _safe_dimension(
             lambda c=component: score_exposure(c.exposure_tier), default=10.0
         )
+        centrality_score = centrality_results.get(component.bom_ref) if component.bom_ref else None
         for cve_id in cves:
             finding = Finding(
                 component_name=component.name,
@@ -190,9 +309,15 @@ def _gather_findings(components) -> list[Finding]:
             finding.exploitability = exploit_results.get(cve_id) or DimensionScore(5.0, "default")
             finding.exposure = exposure
             finding.maintainer_health = maint_cache[id(component)]
+            finding.centrality = centrality_score
             finding.patch_latency = _safe_dimension(
                 lambda c=component, v=cve_id: score_patch_latency(c, v), default=0.0
             )
+            if codebase_path:
+                finding.reachability = _safe_dimension(
+                    lambda c=component, v=cve_id: score_reachability(c, v, codebase_path),
+                    default=5.0,
+                )
             vex = get_vex_status(component, cve_id)
             finding.vex_status = vex.value if vex is not None else None
             findings.append(finding)
@@ -248,7 +373,7 @@ def run(args) -> int:
             return 1
 
         try:
-            components, _graph = parse_sbom(sbom_path)
+            components, dependency_graph = parse_sbom(sbom_path)
         except NotImplementedError as exc:
             _log(f"error: unsupported SBOM format: {exc}")
             return 1
@@ -256,10 +381,13 @@ def run(args) -> int:
             _log(f"error: failed to parse SBOM: {exc}")
             return 1
 
-    _log(f"Parsed {len(components)} component(s). Scoring ...")
+    _log(
+        f"Parsed {len(components)} component(s), "
+        f"{dependency_graph.number_of_edges()} dependency edge(s). Scoring ..."
+    )
 
     weights = load_weights(args.weights)
-    findings = _gather_findings(components)
+    findings = _gather_findings(components, dependency_graph, args.codebase)
     for finding in findings:
         score_finding(finding, weights)
 

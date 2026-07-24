@@ -1,4 +1,5 @@
 import json
+import subprocess
 from datetime import UTC, datetime, timedelta
 from unittest.mock import Mock
 
@@ -124,3 +125,131 @@ def test_non_string_fetched_on_is_treated_as_stale_not_crashed(tmp_path, monkeyp
 
     assert result == fresh_payload
     get.assert_called_once()
+
+
+# --- run_scorecard_cli ---------------------------------------------------
+
+
+def _mock_run(returncode=0, stdout="", stderr=""):
+    completed = Mock()
+    completed.returncode = returncode
+    completed.stdout = stdout
+    completed.stderr = stderr
+    return completed
+
+
+def test_run_scorecard_cli_requires_a_token(monkeypatch):
+    monkeypatch.delenv("GITHUB_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+
+    with pytest.raises(RuntimeError, match="token"):
+        scorecard_client.run_scorecard_cli("psf/requests")
+
+
+def test_run_scorecard_cli_uses_local_binary_when_available(monkeypatch):
+    monkeypatch.setenv("GITHUB_AUTH_TOKEN", "tok")
+    monkeypatch.setattr(
+        scorecard_client.shutil, "which", lambda name: "/usr/bin/scorecard" if name == "scorecard" else None
+    )
+    payload = {"score": 7.5, "checks": [{"name": "Maintained", "score": 10}]}
+    run = Mock(return_value=_mock_run(0, json.dumps(payload)))
+    monkeypatch.setattr(scorecard_client.subprocess, "run", run)
+
+    result = scorecard_client.run_scorecard_cli("psf/requests")
+
+    assert result == payload
+    cmd = run.call_args.args[0]
+    assert cmd[0] == "/usr/bin/scorecard"
+    assert "--repo=github.com/psf/requests" in cmd
+    assert "--format=json" in cmd
+
+
+def test_run_scorecard_cli_falls_back_to_docker_when_no_binary(monkeypatch):
+    monkeypatch.setenv("GITHUB_AUTH_TOKEN", "tok")
+
+    def which(name):
+        return "/usr/bin/docker" if name == "docker" else None
+
+    monkeypatch.setattr(scorecard_client.shutil, "which", which)
+    payload = {"score": 3.0, "checks": []}
+    run = Mock(return_value=_mock_run(0, json.dumps(payload)))
+    monkeypatch.setattr(scorecard_client.subprocess, "run", run)
+
+    result = scorecard_client.run_scorecard_cli("https://github.com/psf/requests")
+
+    assert result == payload
+    cmd = run.call_args.args[0]
+    assert cmd[0] == "/usr/bin/docker"
+    assert "run" in cmd
+    assert scorecard_client.SCORECARD_DOCKER_IMAGE in cmd
+    assert "--repo=github.com/psf/requests" in cmd
+
+
+def test_run_scorecard_cli_raises_when_neither_binary_nor_docker_available(monkeypatch):
+    monkeypatch.setenv("GITHUB_AUTH_TOKEN", "tok")
+    monkeypatch.setattr(scorecard_client.shutil, "which", lambda name: None)
+
+    with pytest.raises(RuntimeError, match="docker"):
+        scorecard_client.run_scorecard_cli("psf/requests")
+
+
+def test_run_scorecard_cli_raises_on_nonzero_exit(monkeypatch):
+    monkeypatch.setenv("GITHUB_AUTH_TOKEN", "tok")
+    monkeypatch.setattr(scorecard_client.shutil, "which", lambda name: "/usr/bin/scorecard")
+    run = Mock(return_value=_mock_run(1, "", "repo not found"))
+    monkeypatch.setattr(scorecard_client.subprocess, "run", run)
+
+    with pytest.raises(RuntimeError, match="repo not found"):
+        scorecard_client.run_scorecard_cli("psf/requests")
+
+
+def test_run_scorecard_cli_raises_on_non_json_output(monkeypatch):
+    monkeypatch.setenv("GITHUB_AUTH_TOKEN", "tok")
+    monkeypatch.setattr(scorecard_client.shutil, "which", lambda name: "/usr/bin/scorecard")
+    run = Mock(return_value=_mock_run(0, "not json"))
+    monkeypatch.setattr(scorecard_client.subprocess, "run", run)
+
+    with pytest.raises(RuntimeError, match="non-JSON"):
+        scorecard_client.run_scorecard_cli("psf/requests")
+
+
+def test_run_scorecard_cli_uses_explicit_token_over_env(monkeypatch):
+    monkeypatch.setenv("GITHUB_AUTH_TOKEN", "env-tok")
+    monkeypatch.setattr(scorecard_client.shutil, "which", lambda name: "/usr/bin/scorecard")
+    run = Mock(return_value=_mock_run(0, json.dumps({"score": 1.0, "checks": []})))
+    monkeypatch.setattr(scorecard_client.subprocess, "run", run)
+
+    scorecard_client.run_scorecard_cli("psf/requests", github_token="explicit-tok")
+
+    env = run.call_args.kwargs["env"]
+    assert env["GITHUB_AUTH_TOKEN"] == "explicit-tok"
+
+
+def test_run_scorecard_cli_propagates_timeout(monkeypatch):
+    monkeypatch.setenv("GITHUB_AUTH_TOKEN", "tok")
+    monkeypatch.setattr(scorecard_client.shutil, "which", lambda name: "/usr/bin/scorecard")
+    run = Mock(side_effect=subprocess.TimeoutExpired(cmd="scorecard", timeout=1))
+    monkeypatch.setattr(scorecard_client.subprocess, "run", run)
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        scorecard_client.run_scorecard_cli("psf/requests", timeout=1)
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("psf/requests", "github.com/psf/requests"),
+        ("github.com/psf/requests", "github.com/psf/requests"),
+        ("https://github.com/psf/requests", "github.com/psf/requests"),
+        ("https://github.com/psf/requests.git", "github.com/psf/requests"),
+        ("https://github.com/psf/requests/", "github.com/psf/requests"),
+        ("http://www.github.com/psf/requests", "github.com/psf/requests"),
+    ],
+)
+def test_normalize_repo_ref(raw, expected):
+    assert scorecard_client._normalize_repo_ref(raw) == expected
+
+
+def test_normalize_repo_ref_rejects_unparseable_input():
+    with pytest.raises(ValueError):
+        scorecard_client._normalize_repo_ref("not-a-repo-ref")

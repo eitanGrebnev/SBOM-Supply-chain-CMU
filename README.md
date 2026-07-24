@@ -8,9 +8,9 @@ research paper.
 ## Status
 
 **The tool runs a complete end-to-end scan** (SBOM in → tiered, scored
-findings + charts out). Four of the six scoring dimensions are implemented,
-and the composite scorer, VEX gate, CLI orchestration, and report/chart
-output are all wired:
+findings + charts out). All six scoring dimensions are implemented, and the
+composite scorer, VEX gate, CLI orchestration, and report/chart output are
+all wired:
 
 - **Exploitability** — batched EPSS lookup, CISA KEV override metadata,
   percentile scoring, daily local JSON caches.
@@ -23,20 +23,32 @@ output are all wired:
 - **Exposure Context** — fixed exposure tiers (`dev_only`/`internal`/
   `internet_facing`) read from a CycloneDX SBOM's tagged exposure property,
   defaulting to worst-case when untagged.
+- **Dependency Centrality** — reachable-dependents (log2-normalized) and
+  betweenness centrality over the SBOM's parsed dependency graph, averaged
+  into one 0–10 score.
+- **Reachability** — import check plus a same-codebase static call graph;
+  pass `--codebase` to score it, otherwise it falls back to its documented
+  missing-data default like Centrality does when the graph has no edges.
+  Python codebases use a built-in AST walker (no extra setup). Java/Maven
+  codebases use the [CodeQL CLI](https://github.com/github/codeql-action/releases)
+  — **entirely optional**: if `codeql` isn't installed, Java components just
+  fall back to the same indeterminate default, no error, no other feature
+  affected. Only install it if you specifically want confirmed (not
+  indeterminate) reachability scores for a Java app.
 - **Composite + VEX + output** — VEX gate (`not_affected` suppresses a
-  finding), weighted composite scoring with tier bucketing, and console /
-  JSON / CSV reports plus tier-distribution and radar charts.
+  finding to 0/Informational, fed by a CycloneDX SBOM's embedded
+  `vulnerabilities[]`/`analysis.state`, not just usable in theory), weighted
+  composite scoring with tier bucketing, and console / JSON / CSV reports
+  plus tier-distribution and radar charts.
 
 **Two input modes:** point the tool at a local SBOM file, or give it a
 GitHub repo (`--repo owner/repo`) and it fetches the repo's dependency-graph
 SBOM automatically.
 
-Reachability and Dependency Centrality are still scaffolded as stubs; the
-composite substitutes their documented missing-data defaults so scans
-complete, and they slot in additively later. SBOM parsing handles **JSON
-CycloneDX and JSON SPDX** (components, and for CycloneDX also exposure-tier
-tagging + VCS references); dependency-graph *edges*, XML CycloneDX, and SPDX
-tag-value are not parsed yet — see the module's docstring.
+SBOM parsing handles **CycloneDX (JSON or XML) and SPDX (JSON or
+tag-value)** — components, dependency-graph edges (CycloneDX
+`dependencies[]` / SPDX `relationships[]`), and for CycloneDX also
+exposure-tier tagging, VCS references, and embedded vulnerabilities/VEX.
 
 ## How to Run It
 
@@ -103,6 +115,10 @@ worked. To run a real scan, point it at an SBOM file:
 sbom-scorer path/to/your-sbom.json
 ```
 
+CVE discovery and per-finding scoring each make one network call per
+component/finding, so a large SBOM can take a few minutes — progress bars
+on screen show how far along each step is rather than sitting silent.
+
 Or scan a GitHub repository directly — the tool fetches the repo's
 dependency-graph SBOM for you (no need to generate one first):
 
@@ -120,7 +136,7 @@ Common options:
 |---|---|
 | `--repo owner/repo` | Scan a GitHub repo by URL / `owner/repo` instead of a local SBOM file |
 | `--charts` | Also write tier-distribution and radar charts (PNG) to the output dir |
-| `--codebase ./my-app` | Path to your application's source code, used for reachability analysis (not used yet) |
+| `--codebase ./my-app` | Path to your application's source code, used for Reachability analysis (Python or Java/Maven) |
 | `--output-dir ./results` | Where to save the report and charts |
 | `--format json` | Output format — `json`, `csv`, or `console` (default) |
 | `--version` | Print the installed version and exit |

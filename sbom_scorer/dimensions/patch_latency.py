@@ -12,12 +12,11 @@ version's actual release timestamp (sbom_scorer.data_sources.registry_client).
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 from sbom_scorer.composite import DimensionScore
 
-
-from datetime import datetime, timezone
 
 def score_patch_latency(component: Any, cve_id: str) -> DimensionScore:
     """Score patch latency for a component's CVE.

@@ -29,9 +29,20 @@ risk to you, regardless of severity rating.
      vulnerable function is a reachable node.
 3. **Identifying the vulnerable function itself.**
    Most CVE databases don't name the vulnerable function directly. Pull the
-   fix commit referenced in the OSV/GHSA advisory (`references[].type ==
-   "FIX"`), diff it, and extract the names of changed functions. This is the
-   input to step 2.
+   fix commit referenced in the OSV/GHSA advisory, diff it, and extract the
+   names of changed functions from the diff's hunk-header context lines.
+   This is the input to step 2.
+
+   In practice this can't be gated on `references[].type == "FIX"` the way
+   an earlier draft of this doc assumed: verified against real OSV data
+   (GHSA-jfh8-c2jp-5v3q, i.e. Log4Shell/CVE-2021-44228), an advisory can
+   carry dozens of references and have *none* typed `"FIX"`, while still
+   linking the actual fix — commonly as a pull-request URL rather than a
+   raw commit URL — under a generic `"WEB"` type. The implementation
+   instead tries every reference's URL and relies on the URL itself being
+   shaped like a GitHub commit or PR permalink (`.../commit/<sha>` or
+   `.../pull/<n>`) as the filter, fetching each match's `.diff` — GitHub
+   serves a unified diff at that suffix for both.
 4. **Fallback when function-level identification fails.**
    If no fix commit is available, or the call graph can't be built (dynamic
    language features, missing source, etc.), fall back to the baseline
