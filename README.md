@@ -151,6 +151,16 @@ python3 main.py --help
 This is handy while the tool is still being built, but installing with
 `pip install -e .` (Step 3) is the normal way to use it.
 
+## Cloudflare Deployment (Web UI)
+
+Prefer a browser over a terminal? The [`cloudflare/`](cloudflare/) folder
+has a Cloudflare-native version: a React UI plus a Worker API that runs
+this same, unmodified `sbom_scorer` package inside a
+[Sandbox SDK](https://developers.cloudflare.com/sandbox/) container — no
+scoring logic is reimplemented. See [`cloudflare/README.md`](cloudflare/README.md)
+for setup, architecture, and known v1 limitations (public repos only, no
+`--codebase` codegen tooling beyond zip upload, upload size caps).
+
 ## Running the Tests
 
 If you also want to run the test suite (useful for contributors, not

@@ -182,8 +182,27 @@ sbom_scorer/
 │   └── ...
 ├── pyproject.toml               # packaging + `sbom-scorer` console-script entry point
 ├── weights.yaml                 # dimension weights, tier thresholds, missing-data defaults
-└── main.py                      # dev-mode shim — runs the CLI without installing
+├── main.py                      # dev-mode shim — runs the CLI without installing
+└── cloudflare/                  # Cloudflare-native deployment — see cloudflare/README.md
+    ├── worker/                  # Worker + Sandbox container that runs this same CLI
+    └── app/                     # React + Vite + Recharts UI (SummaryCards/TierBarChart/
+                                  # FindingsTable/FindingDetail) served as static assets
 ```
+
+## Cloudflare Deployment
+
+`cloudflare/` adds an alternative, browser-based deployment path alongside
+the local CLI — a Worker (`cloudflare/worker/`) that runs an unmodified
+`sbom_scorer` in a [Sandbox SDK](https://developers.cloudflare.com/sandbox/)
+container (real Docker image, not a reimplementation of the scoring logic
+in JS), fronting a React UI (`cloudflare/app/`) that consumes the exact
+same JSON report contract as `output/report.py::write_json`. The Worker
+serves the built React app as static assets and only proxies `/api/*` to
+its fetch handler, so it's a single `wrangler deploy`, no separate hosting
+or CORS setup. See `cloudflare/README.md` for the full setup, the
+Dockerfile/`wrangler.jsonc` details, and documented v1 limitations (public
+repos only — no `GITHUB_TOKEN` passthrough to the sandbox; SBOM/codebase
+upload size caps).
 
 ## Design Principles for Implementation
 

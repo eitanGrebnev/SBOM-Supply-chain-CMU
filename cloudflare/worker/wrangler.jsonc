@@ -1,0 +1,38 @@
+{
+	"$schema": "./node_modules/wrangler/config-schema.json",
+	"name": "sbom-scorer",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-07-26",
+	"compatibility_flags": ["nodejs_compat"],
+	"observability": {
+		"enabled": true,
+	},
+	// Runs the existing Python sbom-scorer CLI inside a real container
+	// (Docker image built from ../../ — the repo root — so it can COPY the
+	// sbom_scorer/ package, pyproject.toml, and weights.yaml directly).
+	"containers": [
+		{
+			"class_name": "Sandbox",
+			"image": "./Dockerfile",
+			"image_build_context": "../..",
+			// "standard-1" (1 vCPU / 4GB) rather than the "lite" default —
+			// the scorer's dependency set (networkx, cyclonedx-python-lib,
+			// spdx-tools, matplotlib, pyvis) is heavier than a minimal sandbox.
+			"instance_type": "standard-1",
+			"max_instances": 3,
+		},
+	],
+	"durable_objects": {
+		"bindings": [{ "class_name": "Sandbox", "name": "Sandbox" }],
+	},
+	"migrations": [{ "tag": "v1", "new_sqlite_classes": ["Sandbox"] }],
+	// The built React app (see ../app) is served as static assets from the
+	// same Worker; only /api/* is routed to the fetch handler below, so the
+	// whole thing is a single deploy with no CORS to configure.
+	"assets": {
+		"directory": "../app/dist",
+		"binding": "ASSETS",
+		"run_worker_first": ["/api/*"],
+		"not_found_handling": "single-page-application",
+	},
+}
