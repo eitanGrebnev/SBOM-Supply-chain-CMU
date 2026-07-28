@@ -1,3 +1,5 @@
+Live site: https://sbom.grebnev.org/
+
 # SBOM-Supply-chain-CMU
 
 SBOM Vulnerability Scoring Tool — scores vulnerabilities in a Software Bill
