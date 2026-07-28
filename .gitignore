@@ -7,3 +7,21 @@ venv/
 /results/
 *.egg-info/
 .DS_Store
+
+# --- Private deployment layer (do not publish) ---
+# k8s/ holds the self-hosted deployment: internal hostnames, LAN addresses,
+# private registry URLs, storage classes and priority classes. None of it is
+# needed to run or evaluate sbom_scorer, and this repo is intended to be open
+# source. Ignored at the folder level on purpose — a file-by-file ignore would
+# have to be re-checked on every future manifest edit; this one cannot drift.
+k8s/
+
+# Local Worker secrets (SCANNER_API_KEY et al). Never commit.
+cloudflare/worker/.dev.vars
+.env
+.env.*
+
+# Real deploy config: the tracked wrangler.jsonc ships placeholder hostnames
+# so a clone works out of the box, and the actual origin/route live here.
+# Keeps self-hosted infrastructure names out of a public repo.
+cloudflare/worker/wrangler.local.jsonc

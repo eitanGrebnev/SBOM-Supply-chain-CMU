@@ -192,17 +192,16 @@ sbom_scorer/
 ## Cloudflare Deployment
 
 `cloudflare/` adds an alternative, browser-based deployment path alongside
-the local CLI — a Worker (`cloudflare/worker/`) that runs an unmodified
-`sbom_scorer` in a [Sandbox SDK](https://developers.cloudflare.com/sandbox/)
-container (real Docker image, not a reimplementation of the scoring logic
-in JS), fronting a React UI (`cloudflare/app/`) that consumes the exact
-same JSON report contract as `output/report.py::write_json`. The Worker
-serves the built React app as static assets and only proxies `/api/*` to
-its fetch handler, so it's a single `wrangler deploy`, no separate hosting
-or CORS setup. See `cloudflare/README.md` for the full setup, the
-Dockerfile/`wrangler.jsonc` details, and documented v1 limitations (public
-repos only — no `GITHUB_TOKEN` passthrough to the sandbox; SBOM/codebase
-upload size caps).
+the local CLI — a Worker (`cloudflare/worker/`) that fronts a React UI
+(`cloudflare/app/`) consuming the exact same JSON report contract as
+`output/report.py::write_json`. The Worker serves the built React app as
+static assets and proxies only `/api/*` to a scanner API running an
+unmodified `sbom_scorer` (no reimplementation of the scoring logic in JS),
+injecting an API key the browser never sees. That's a single
+`wrangler deploy`, no separate hosting or CORS setup. Scans are submitted
+asynchronously and polled, so the UI can show live per-phase progress
+instead of a blank spinner. See `cloudflare/README.md` for setup,
+configuration, and documented limitations.
 
 ## Design Principles for Implementation
 
