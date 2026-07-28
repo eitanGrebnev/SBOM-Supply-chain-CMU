@@ -121,3 +121,72 @@ def test_run_rejects_both_inputs(tmp_path):
     parser = cli.build_arg_parser()
     args = parser.parse_args(["some.json", "--repo", "psf/requests"])
     assert cli.run(args) == 2
+
+
+# --- Progress reporting ------------------------------------------------------
+#
+# The web UI's progress bar reads this file off the shared scans volume, because
+# the scan runs in a separate pod whose container logs are garbage collected the
+# moment it finishes. The file is the only durable channel between the two.
+
+
+def _reporter(tmp_path, monkeypatch):
+    monkeypatch.setenv("SBOM_SCORER_PROGRESS_FILE", str(tmp_path / "progress.json"))
+    return cli._ProgressReporter()
+
+
+def test_progress_reporter_is_disabled_without_env(monkeypatch):
+    """A plain local CLI run must not create stray files."""
+    monkeypatch.delenv("SBOM_SCORER_PROGRESS_FILE", raising=False)
+    reporter = cli._ProgressReporter()
+    assert reporter.enabled is False
+    # Must be safely callable regardless, since _log() always calls it.
+    reporter.log("hello")
+    reporter.start_phase("Scoring", 3)
+    reporter.advance()
+
+
+def test_progress_reporter_writes_phase_and_counts(tmp_path, monkeypatch):
+    reporter = _reporter(tmp_path, monkeypatch)
+    reporter.start_phase("Discovering CVEs", 2)
+    reporter.advance()
+    # The last item forces a write, so the bar can always reach 100% even
+    # though intermediate writes are rate limited.
+    reporter.advance()
+
+    data = json.loads((tmp_path / "progress.json").read_text(encoding="utf-8"))
+    assert data["phase"] == "Discovering CVEs"
+    assert data["completed"] == 2
+    assert data["total"] == 2
+
+
+def test_progress_reporter_keeps_only_recent_log_lines(tmp_path, monkeypatch):
+    """A scan warning once per component must not grow the file unbounded."""
+    reporter = _reporter(tmp_path, monkeypatch)
+    for i in range(cli._PROGRESS_LOG_LINES + 25):
+        reporter.log(f"line {i}")
+
+    data = json.loads((tmp_path / "progress.json").read_text(encoding="utf-8"))
+    assert len(data["lines"]) == cli._PROGRESS_LOG_LINES
+    assert data["lines"][-1] == f"line {cli._PROGRESS_LOG_LINES + 24}"
+
+
+def test_progress_reporter_survives_unwritable_path(tmp_path, monkeypatch):
+    """Progress is cosmetic; a full volume must not fail the scan."""
+    monkeypatch.setenv(
+        "SBOM_SCORER_PROGRESS_FILE", str(tmp_path / "no-such-dir" / "progress.json")
+    )
+    reporter = cli._ProgressReporter()
+    reporter.start_phase("Scoring findings", 1)
+    reporter.advance()
+
+
+def test_progress_wraps_iterable_and_counts(tmp_path, monkeypatch):
+    """_progress must still yield every item once counting is enabled."""
+    monkeypatch.setenv("SBOM_SCORER_PROGRESS_FILE", str(tmp_path / "progress.json"))
+    monkeypatch.setattr(cli, "_PROGRESS", cli._ProgressReporter())
+
+    assert list(cli._progress(iter([1, 2, 3]), desc="Scoring", total=3)) == [1, 2, 3]
+
+    data = json.loads((tmp_path / "progress.json").read_text(encoding="utf-8"))
+    assert data["completed"] == 3

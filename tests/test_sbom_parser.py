@@ -128,7 +128,13 @@ def test_parses_component_fields(tmp_path):
         ("pkg:maven/org.apache/commons@1.0.0", "Maven"),
         ("pkg:gem/rails@1.0.0", "RubyGems"),
         ("pkg:cargo/serde@1.0.0", "crates.io"),
-        ("pkg:golang/example.com/foo@1.0.0", "golang"),  # unmapped -> purl type as-is
+        ("pkg:golang/example.com/foo@1.0.0", "Go"),
+        ("pkg:nuget/Newtonsoft.Json@13.0.0", "NuGet"),
+        ("pkg:composer/monolog/monolog@2.0.0", "Packagist"),
+        # GitHub's dependency graph emits this for every workflow `uses:`
+        # line, so it shows up in almost any repo-mode scan.
+        ("pkg:githubactions/actions/checkout@v4", "GitHub Actions"),
+        ("pkg:conan/zlib@1.0.0", "conan"),  # still unmapped -> purl type as-is
     ],
 )
 def test_ecosystem_derived_from_purl_type(tmp_path, purl, expected_ecosystem):
@@ -137,6 +143,26 @@ def test_ecosystem_derived_from_purl_type(tmp_path, purl, expected_ecosystem):
     path = _write(tmp_path, "sbom.json", sbom)
     components, _ = parse_sbom(path)
     assert components[0].ecosystem == expected_ecosystem
+
+
+def test_github_actions_component_keeps_owner_repo_name(tmp_path):
+    """OSV identifies an Action by its full "owner/repo", not the bare repo.
+
+    The purl namespace ("actions") is the owner, so it must survive into
+    Component.name — dropping it would turn every Action lookup into a
+    silent miss that reads the same as "no known vulnerabilities".
+    """
+    component = {
+        "type": "library",
+        "name": "checkout",
+        "version": "v4",
+        "purl": "pkg:githubactions/actions/checkout@v4",
+    }
+    sbom = _cyclonedx_sbom(components=[component])
+    path = _write(tmp_path, "sbom.json", sbom)
+    components, _ = parse_sbom(path)
+    assert components[0].name == "actions/checkout"
+    assert components[0].ecosystem == "GitHub Actions"
 
 
 # --- Maven/npm namespaced package names -------------------------------------

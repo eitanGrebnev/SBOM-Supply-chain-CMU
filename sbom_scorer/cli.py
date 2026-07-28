@@ -19,9 +19,14 @@ default (see sbom_scorer.composite) rather than being skipped as an error.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import tempfile
+import threading
+import time
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 
 from sbom_scorer.composite import (
     DimensionScore,
@@ -88,6 +93,132 @@ def _get_version() -> str:
 def _log(msg: str) -> None:
     """Emit progress to stderr so it doesn't pollute stdout report output."""
     print(msg, file=sys.stderr)
+    _PROGRESS.log(msg)
+
+
+#: How many recent status lines the progress file keeps. Enough to show the
+#: user what is happening without letting a scan that logs one warning per
+#: component grow the file without bound.
+_PROGRESS_LOG_LINES = 50
+
+#: Minimum seconds between progress-file writes. Every item of a large scan
+#: calling advance() would otherwise mean one small write per item onto a
+#: network filesystem, which is exactly the small-random-IO pattern the
+#: scans volume is worst at. Phase changes bypass this and flush immediately,
+#: so the UI never sits on a stale phase name.
+_PROGRESS_MIN_WRITE_INTERVAL = 0.5
+
+
+class _ProgressReporter:
+    """Mirror scan progress into a JSON file for an out-of-process reader.
+
+    A scan runs inside its own Kubernetes Job pod while the API process the
+    browser polls lives somewhere else entirely; the only thing the two share
+    is the scans volume. Writing progress there is what makes a live progress
+    bar possible at all.
+
+    Container logs deliberately are NOT the mechanism: kubelet garbage
+    collects a completed pod's logs, so anyone reloading the page after a
+    scan finished would get "unable to retrieve container logs" instead of
+    the run they just watched. A file on the volume outlives the pod.
+
+    Disabled unless SBOM_SCORER_PROGRESS_FILE is set, so a normal local CLI
+    run costs nothing and never leaves a stray file behind.
+    """
+
+    def __init__(self) -> None:
+        self._path = os.environ.get("SBOM_SCORER_PROGRESS_FILE") or None
+        # advance() is driven from the main thread, but _log() is reachable
+        # from the scoring pools via _safe_dimension, so state is guarded.
+        self._lock = threading.Lock()
+        self._phase = "Starting"
+        self._completed = 0
+        self._total: int | None = None
+        self._lines: deque[str] = deque(maxlen=_PROGRESS_LOG_LINES)
+        self._last_write = 0.0
+
+    @property
+    def enabled(self) -> bool:
+        return self._path is not None
+
+    def log(self, msg: str) -> None:
+        """Record a status line and flush, so messages appear promptly."""
+        if not self._path:
+            return
+        with self._lock:
+            self._lines.append(msg)
+            self._write_locked(force=True)
+
+    def start_phase(self, desc: str, total: int | None) -> None:
+        """Begin a named phase, resetting the item counter."""
+        if not self._path:
+            return
+        with self._lock:
+            self._phase = desc
+            self._completed = 0
+            self._total = total
+            self._write_locked(force=True)
+
+    def advance(self) -> None:
+        """Count one completed item in the current phase."""
+        if not self._path:
+            return
+        with self._lock:
+            self._completed += 1
+            # The final item forces a write so the bar always lands on 100%
+            # rather than freezing just short of it.
+            self._write_locked(force=self._completed == self._total)
+
+    def _write_locked(self, *, force: bool) -> None:
+        """Serialize current state. Caller must hold the lock."""
+        now = time.monotonic()
+        if not force and now - self._last_write < _PROGRESS_MIN_WRITE_INTERVAL:
+            return
+        self._last_write = now
+        payload = {
+            "phase": self._phase,
+            "completed": self._completed,
+            "total": self._total,
+            "lines": list(self._lines),
+        }
+        # Written to a temporary file and renamed so a reader polling this
+        # path never observes a half-written document. os.replace is atomic
+        # within a directory, which is why the temp file is a sibling rather
+        # than somewhere under /tmp.
+        tmp = f"{self._path}.tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle)
+            os.replace(tmp, self._path)
+        except OSError:
+            # Progress reporting is cosmetic; a full or unwritable volume
+            # must never be the reason a scan fails.
+            pass
+
+
+_PROGRESS = _ProgressReporter()
+
+
+#: Threads used for the network-bound scoring passes. A scan spends nearly all
+#: of its wall-clock time blocked on OSV/GitHub/Scorecard HTTP calls rather
+#: than on CPU, so these are I/O-bound threads: the GIL is released for the
+#: duration of each request and they genuinely overlap. Kept well below the
+#: point where we would look like abuse to the upstream APIs.
+_DEFAULT_MAX_WORKERS = 12
+
+
+def _max_workers() -> int:
+    """Resolve the scoring thread count, overridable per deployment."""
+    raw = os.environ.get("SBOM_SCORER_MAX_WORKERS")
+    if not raw:
+        return _DEFAULT_MAX_WORKERS
+    try:
+        # Clamped rather than trusted: too many threads turns a slow scan into
+        # upstream rate-limiting, which is slower still.
+        return max(1, min(int(raw), 32))
+    except ValueError:
+        _log(f"  ! ignoring non-numeric SBOM_SCORER_MAX_WORKERS={raw!r}")
+        return _DEFAULT_MAX_WORKERS
 
 
 def _progress(iterable, *, desc: str, total: int | None = None):
@@ -102,12 +233,32 @@ def _progress(iterable, *, desc: str, total: int | None = None):
     json/csv write to a file) — same reasoning as _log. Degrades to a
     plain, silent iterator if tqdm isn't installed, so a scan never fails
     just because of a missing optional UX dependency.
+
+    The same counts also feed _ProgressReporter when a scan is running
+    under the API, which is what drives the web UI's progress bar.
     """
+    _PROGRESS.start_phase(desc, total)
     try:
         from tqdm import tqdm
     except ImportError:
-        return iterable
-    return tqdm(iterable, desc=desc, total=total, unit="item", file=sys.stderr, leave=False)
+        wrapped = iterable
+    else:
+        wrapped = tqdm(iterable, desc=desc, total=total, unit="item", file=sys.stderr, leave=False)
+    if not _PROGRESS.enabled:
+        return wrapped
+    return _counted(wrapped)
+
+
+def _counted(iterable):
+    """Yield from iterable, reporting each item to the progress file.
+
+    Counts on arrival rather than after the consumer handles the item: for
+    the pool.map() passes the expensive network call is already done by the
+    time an item is yielded, so this is the point that reflects real work.
+    """
+    for item in iterable:
+        _PROGRESS.advance()
+        yield item
 
 
 def _safe_dimension(fn, *, default: float, confidence: str = "default") -> DimensionScore:
@@ -182,11 +333,18 @@ def _batch_prefilter_candidates(components) -> list:
     just loses the speed-up, not any findings.
     """
     from sbom_scorer.data_sources import osv_client
+    from sbom_scorer.sbom_parser import OSV_ECOSYSTEMS
 
-    free_candidates = [
-        c for c in components if c.cve_ids or not c.ecosystem or not c.version
-    ]
-    queryable = [c for c in components if not c.cve_ids and c.ecosystem and c.version]
+    def _batchable(c) -> bool:
+        # An ecosystem OSV doesn't recognise makes it reject the *whole*
+        # batch, so those components skip the prefilter entirely and go
+        # straight to per-component queries.
+        return bool(
+            not c.cve_ids and c.ecosystem and c.version and c.ecosystem in OSV_ECOSYSTEMS
+        )
+
+    free_candidates = [c for c in components if not _batchable(c)]
+    queryable = [c for c in components if _batchable(c)]
     if not queryable:
         return free_candidates
 
@@ -264,13 +422,21 @@ def _gather_findings(components, dependency_graph=None, codebase_path=None) -> l
     # slowest step for a large SBOM otherwise, so this also cuts down what
     # the progress bar has to sit through.
     candidates = _batch_prefilter_candidates(components)
+    workers = _max_workers()
     component_cves: list[tuple] = []
     all_cves: set[str] = set()
-    for component in _progress(candidates, desc="Discovering CVEs", total=len(candidates)):
-        cves = _discover_cves(component)
-        if cves:
-            component_cves.append((component, cves))
-            all_cves.update(cves)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        # Executor.map yields in *input* order, not completion order, so
+        # findings stay deterministic regardless of which lookup returns
+        # first — important for reproducible reports and stable tests.
+        discovered = pool.map(_discover_cves, candidates)
+        for component, cves in zip(
+            candidates,
+            _progress(discovered, desc="Discovering CVEs", total=len(candidates)),
+        ):
+            if cves:
+                component_cves.append((component, cves))
+                all_cves.update(cves)
 
     _log(f"Discovered {len(all_cves)} unique CVE(s) across {len(component_cves)} affected component(s).")
     if not all_cves:
@@ -287,40 +453,61 @@ def _gather_findings(components, dependency_graph=None, codebase_path=None) -> l
     ]
     centrality_results = _safe_centrality_batch(affected_component_ids, dependency_graph)
 
-    # 4. Maintainer Health is per-component — compute once and reuse.
-    maint_cache: dict[int, DimensionScore] = {}
-
-    findings: list[Finding] = []
-    for component, cves in _progress(component_cves, desc="Scoring findings", total=len(component_cves)):
-        if id(component) not in maint_cache:
-            maint_cache[id(component)] = _safe_dimension(
-                lambda c=component: score_maintainer_health(c), default=5.0
-            )
-        exposure = _safe_dimension(
-            lambda c=component: score_exposure(c.exposure_tier), default=10.0
+    # 4. Maintainer Health and Exposure are per-component, so they are scored
+    # once per component rather than once per finding — a component with ten
+    # CVEs would otherwise repeat the same Scorecard lookup ten times.
+    def _component_scores(component):
+        return (
+            _safe_dimension(lambda c=component: score_maintainer_health(c), default=5.0),
+            _safe_dimension(lambda c=component: score_exposure(c.exposure_tier), default=10.0),
         )
-        centrality_score = centrality_results.get(component.bom_ref) if component.bom_ref else None
-        for cve_id in cves:
-            finding = Finding(
-                component_name=component.name,
-                component_version=component.version,
-                cve_id=cve_id,
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        per_component = list(pool.map(_component_scores, [c for c, _cves in component_cves]))
+
+    # 5. Patch Latency and Reachability are per (component, CVE), so flatten
+    # to that granularity before scoring. Doing it here rather than in a
+    # nested loop means one component with many CVEs cannot become a
+    # straggler holding up the whole pass.
+    pairs = [
+        (index, component, cve_id)
+        for index, (component, cves) in enumerate(component_cves)
+        for cve_id in cves
+    ]
+
+    def _build_finding(item) -> Finding:
+        index, component, cve_id = item
+        maintainer_health, exposure = per_component[index]
+
+        finding = Finding(
+            component_name=component.name,
+            component_version=component.version,
+            cve_id=cve_id,
+        )
+        finding.exploitability = exploit_results.get(cve_id) or DimensionScore(5.0, "default")
+        finding.exposure = exposure
+        finding.maintainer_health = maintainer_health
+        finding.centrality = (
+            centrality_results.get(component.bom_ref) if component.bom_ref else None
+        )
+        finding.patch_latency = _safe_dimension(
+            lambda c=component, v=cve_id: score_patch_latency(c, v), default=0.0
+        )
+        if codebase_path:
+            finding.reachability = _safe_dimension(
+                lambda c=component, v=cve_id: score_reachability(c, v, codebase_path),
+                default=5.0,
             )
-            finding.exploitability = exploit_results.get(cve_id) or DimensionScore(5.0, "default")
-            finding.exposure = exposure
-            finding.maintainer_health = maint_cache[id(component)]
-            finding.centrality = centrality_score
-            finding.patch_latency = _safe_dimension(
-                lambda c=component, v=cve_id: score_patch_latency(c, v), default=0.0
+        vex = get_vex_status(component, cve_id)
+        finding.vex_status = vex.value if vex is not None else None
+        return finding
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        findings: list[Finding] = list(
+            _progress(
+                pool.map(_build_finding, pairs), desc="Scoring findings", total=len(pairs)
             )
-            if codebase_path:
-                finding.reachability = _safe_dimension(
-                    lambda c=component, v=cve_id: score_reachability(c, v, codebase_path),
-                    default=5.0,
-                )
-            vex = get_vex_status(component, cve_id)
-            finding.vex_status = vex.value if vex is not None else None
-            findings.append(finding)
+        )
 
     return findings
 

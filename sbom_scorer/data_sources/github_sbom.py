@@ -19,9 +19,18 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from typing import Any
 
 GITHUB_API_BASE = "https://api.github.com"
+
+
+class GitHubRateLimitError(RuntimeError):
+    """Raised when GitHub rejects a request because of rate limiting.
+
+    Distinct from a permission failure so callers (and the CLI's error
+    output) can tell "wait or authenticate" apart from "you cannot see this".
+    """
 
 # Accepts: https://github.com/owner/repo(.git)(/...), git@github.com:owner/repo,
 # github.com/owner/repo, or a bare "owner/repo".
@@ -83,6 +92,39 @@ def fetch_sbom(url: str, token: str | None = None, timeout: int = 30) -> dict[st
         headers["Authorization"] = f"Bearer {token}"
 
     response = requests.get(endpoint, headers=headers, timeout=timeout)
+
+    # A bare raise_for_status() here surfaces as an opaque "403 Client Error",
+    # which is the single most common failure of an unauthenticated scan and
+    # gives the user nothing to act on. Rate limiting, missing permissions and
+    # a disabled dependency graph all need different fixes, so separate them.
+    if response.status_code in (403, 429):
+        remaining = response.headers.get("X-RateLimit-Remaining")
+        if remaining == "0" or "Retry-After" in response.headers:
+            reset = response.headers.get("X-RateLimit-Reset")
+            when = ""
+            if reset and reset.isdigit():
+                minutes = max(0, round((int(reset) - time.time()) / 60))
+                when = f" Resets in about {minutes} minute(s)."
+            hint = (
+                "Set GITHUB_TOKEN to raise the limit from 60 to 5,000 requests/hour."
+                if not token
+                else "Wait for the window to reset, or lower SBOM_SCORER_MAX_WORKERS."
+            )
+            raise GitHubRateLimitError(
+                f"GitHub rate limit exceeded for {owner}/{repo}.{when} {hint}"
+            )
+        raise PermissionError(
+            f"GitHub denied access to {owner}/{repo}'s dependency graph. "
+            "A private repo needs a token with the 'repo' scope."
+        )
+
+    if response.status_code == 404:
+        raise ValueError(
+            f"No dependency-graph SBOM for {owner}/{repo}. The repo may not exist, "
+            "may be private (set GITHUB_TOKEN), or may have the dependency graph "
+            "disabled in Settings > Code security."
+        )
+
     response.raise_for_status()
     data = response.json()
 

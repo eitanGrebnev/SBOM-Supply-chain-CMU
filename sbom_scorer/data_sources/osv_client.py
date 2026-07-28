@@ -93,7 +93,15 @@ def query_batch(queries: list[dict]) -> list[dict]:
         return []
 
     response = requests.post(OSV_QUERYBATCH_URL, json={"queries": queries}, timeout=30)
-    response.raise_for_status()
+    try:
+        response.raise_for_status()
+    except requests.HTTPError as exc:
+        # OSV's 4xx body names the offending query (e.g. "error in query at
+        # index 7: ... invalid ecosystem"). raise_for_status() alone throws
+        # that away, leaving a bare "400 Bad Request" that says nothing about
+        # which of several hundred components broke the batch.
+        detail = response.text.strip()[:300]
+        raise requests.HTTPError(f"{exc} :: {detail}", response=response) from exc
     results = response.json().get("results", [])
 
     # Defensive: pad/truncate to match `queries` 1:1 even if OSV ever

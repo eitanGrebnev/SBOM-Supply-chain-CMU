@@ -163,21 +163,45 @@ _EXPOSURE_PROPERTY_NAME = "exposure:tier"
 
 # purl type -> ecosystem string, matching the casing
 # sbom_scorer.data_sources.registry_client expects ("PyPI", "npm", ...).
+#
+# Unmapped types fall through to the raw purl type (see _parse_purl), which
+# OSV rejects with a 400 rather than an empty result — and because one bad
+# entry fails the whole /v1/querybatch request, a single unmapped component
+# degrades the entire scan to per-component queries. GitHub's dependency
+# graph emits githubactions for every workflow `uses:` line, so any repo
+# with CI hit this. The names below are OSV's exact ecosystem spellings.
 _PURL_TYPE_TO_ECOSYSTEM = {
     "pypi": "PyPI",
     "npm": "npm",
     "maven": "Maven",
     "gem": "RubyGems",
     "cargo": "crates.io",
+    "githubactions": "GitHub Actions",
+    "golang": "Go",
+    "nuget": "NuGet",
+    "composer": "Packagist",
 }
 
 # Ecosystems whose real package identity is split across a namespace segment
-# (Maven's groupId, npm's @scope) plus a bare name, and the separator OSV/
-# the registries expect joining them back together with.
+# (Maven's groupId, npm's @scope, an Action's or a Packagist package's owner,
+# a Go module's host+path) plus a bare name, and the separator OSV/the
+# registries expect joining them back together with. Ecosystems absent from
+# this map (PyPI, RubyGems, crates.io, NuGet) address packages by a single
+# flat name, so their CycloneDX `name` field is already the whole identity.
 _NAMESPACED_ECOSYSTEM_JOINERS = {
     "Maven": ":",
     "npm": "/",
+    "GitHub Actions": "/",
+    "Go": "/",
+    "Packagist": "/",
 }
+
+# The ecosystem strings OSV will actually accept, i.e. everything the map
+# above can produce. An unmapped purl type falls through as its raw purl
+# type ("conan", "github", ...), which OSV rejects with a 400 — and since a
+# single bad entry fails an entire /v1/querybatch call, callers must be able
+# to drop those *before* batching instead of losing the whole batch.
+OSV_ECOSYSTEMS = frozenset(_PURL_TYPE_TO_ECOSYSTEM.values())
 
 
 def _resolve_component_name(cdx_component: Any, purl: Any, ecosystem: str) -> str:

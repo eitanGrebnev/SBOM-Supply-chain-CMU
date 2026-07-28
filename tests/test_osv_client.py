@@ -110,7 +110,20 @@ def test_query_batch_request_exception_raises_not_swallowed(monkeypatch):
 
 def test_query_batch_http_error_raises(monkeypatch):
     response = Mock()
+    response.text = ""
     response.raise_for_status.side_effect = requests.HTTPError("500 server error")
     monkeypatch.setattr(requests, "post", Mock(return_value=response))
     with pytest.raises(requests.HTTPError):
         osv_client.query_batch([{"package": {"name": "x", "ecosystem": "PyPI"}, "version": "1.0"}])
+
+
+def test_query_batch_http_error_includes_response_body(monkeypatch):
+    # OSV's 400 body is the only thing that identifies *which* query broke a
+    # several-hundred-entry batch; losing it makes the failure undiagnosable.
+    response = Mock()
+    response.text = '{"code":3,"message":"error in query at index 7: invalid ecosystem"}'
+    response.raise_for_status.side_effect = requests.HTTPError("400 Client Error")
+    monkeypatch.setattr(requests, "post", Mock(return_value=response))
+    with pytest.raises(requests.HTTPError, match="index 7"):
+        osv_client.query_batch([{"package": {"name": "x", "ecosystem": "PyPI"}, "version": "1.0"}])
+

@@ -31,6 +31,9 @@ def test_fetch_sbom_extracts_inner_document(monkeypatch):
     spdx_doc = {"spdxVersion": "SPDX-2.3", "packages": []}
 
     class FakeResponse:
+        status_code = 200
+        headers: dict[str, str] = {}
+
         def raise_for_status(self):
             return None
 
@@ -58,6 +61,9 @@ def test_fetch_sbom_extracts_inner_document(monkeypatch):
 
 def test_fetch_sbom_adds_bearer_token(monkeypatch):
     class FakeResponse:
+        status_code = 200
+        headers: dict[str, str] = {}
+
         def raise_for_status(self):
             return None
 
@@ -81,6 +87,9 @@ def test_fetch_sbom_adds_bearer_token(monkeypatch):
 
 def test_fetch_sbom_missing_sbom_key_raises(monkeypatch):
     class FakeResponse:
+        status_code = 200
+        headers: dict[str, str] = {}
+
         def raise_for_status(self):
             return None
 
@@ -91,6 +100,58 @@ def test_fetch_sbom_missing_sbom_key_raises(monkeypatch):
 
     monkeypatch.setattr(requests, "get", lambda *a, **k: FakeResponse())
     with pytest.raises(ValueError):
+        github_sbom.fetch_sbom("psf/requests")
+
+
+def test_fetch_sbom_rate_limited_raises_actionable_error(monkeypatch):
+    """A 403 with no remaining quota is the most common unauthenticated failure."""
+
+    class FakeResponse:
+        status_code = 403
+        headers = {"X-RateLimit-Remaining": "0"}
+
+        def json(self):  # pragma: no cover — must not be reached
+            return {}
+
+    import requests
+
+    monkeypatch.setattr(requests, "get", lambda *a, **k: FakeResponse())
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+
+    with pytest.raises(github_sbom.GitHubRateLimitError) as excinfo:
+        github_sbom.fetch_sbom("psf/requests")
+    # Without a token, the fix is to set one — the message must say so.
+    assert "GITHUB_TOKEN" in str(excinfo.value)
+
+
+def test_fetch_sbom_forbidden_without_rate_limit_is_permission_error(monkeypatch):
+    class FakeResponse:
+        status_code = 403
+        headers = {"X-RateLimit-Remaining": "4999"}
+
+        def json(self):  # pragma: no cover — must not be reached
+            return {}
+
+    import requests
+
+    monkeypatch.setattr(requests, "get", lambda *a, **k: FakeResponse())
+    with pytest.raises(PermissionError):
+        github_sbom.fetch_sbom("psf/requests")
+
+
+def test_fetch_sbom_404_explains_dependency_graph(monkeypatch):
+    class FakeResponse:
+        status_code = 404
+        headers: dict[str, str] = {}
+
+        def json(self):  # pragma: no cover — must not be reached
+            return {}
+
+    import requests
+
+    monkeypatch.setattr(requests, "get", lambda *a, **k: FakeResponse())
+    with pytest.raises(ValueError, match="dependency graph"):
         github_sbom.fetch_sbom("psf/requests")
 
 

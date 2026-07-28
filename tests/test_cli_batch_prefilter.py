@@ -46,6 +46,31 @@ def test_components_missing_ecosystem_or_version_skip_the_batch_call(monkeypatch
     batch.assert_not_called()
 
 
+def test_component_with_unknown_ecosystem_skips_the_batch_call(monkeypatch):
+    # OSV rejects the *whole* querybatch if any single entry names an
+    # ecosystem it doesn't know, so unmapped purl types (conan, github, ...)
+    # must never reach it — one exotic dependency would otherwise cost every
+    # other component its prefilter.
+    unknown = _component("zlib", ecosystem="conan")
+    known = _component("requests")
+    captured = {}
+
+    def fake_batch(queries):
+        captured["queries"] = queries
+        return [{"vulns": []}]
+
+    monkeypatch.setattr(osv_client, "query_batch", fake_batch)
+
+    result = cli._batch_prefilter_candidates([unknown, known])
+
+    assert captured["queries"] == [
+        {"package": {"name": "requests", "ecosystem": "PyPI"}, "version": "1.0.0"}
+    ]
+    # Unbatchable, so it falls through to a per-component query rather than
+    # being silently treated as clean.
+    assert result == [unknown]
+
+
 def test_only_queryable_components_are_sent_to_batch(monkeypatch):
     embedded = _component("has-cves", cve_ids=["CVE-2023-0001"])
     queryable = _component("check-me")
