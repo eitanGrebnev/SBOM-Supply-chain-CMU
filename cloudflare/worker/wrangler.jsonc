@@ -7,36 +7,52 @@
 	"observability": {
 		"enabled": true,
 	},
-	// Runs the existing Python sbom-scorer CLI inside a real container
-	// (Docker image built from ../../ — the repo root — so it can COPY the
-	// sbom_scorer/ package, pyproject.toml, and weights.yaml directly).
-	"containers": [
-		{
-			"class_name": "Sandbox",
-			"image": "./Dockerfile",
-			"image_build_context": "../..",
-			// "standard-1" (1 vCPU / 4GB) rather than the "lite" default —
-			// the scorer's dependency set (networkx, cyclonedx-python-lib,
-			// spdx-tools, matplotlib, pyvis) is heavier than a minimal sandbox.
-			"instance_type": "standard-1",
-			"max_instances": 3,
-		},
+	// No containers or Durable Object bindings here on purpose. Cloudflare
+	// Containers are a Workers *Paid* feature, and the memory allowance bills
+	// provisioned wall-clock time rather than CPU, so a long scan is expensive
+	// even while it sits idle waiting on an upstream API. Scanning now happens
+	// on self-hosted infrastructure and this Worker is a pure streaming proxy,
+	// which keeps the whole deployment inside the Workers free plan.
+	//
+	// The migration list is append-only history, not current state: v1 is kept
+	// so the tags Cloudflare has already applied still line up, and v2 tells it
+	// to drop the now-removed Sandbox class. Without v2 the deploy is rejected
+	// because the live script would lose a class its Durable Objects depend on.
+	// Deleting the class destroys its stored data, which is fine here — Sandbox
+	// state was per-scan scratch space that never outlived a request.
+	"migrations": [
+		{ "tag": "v1", "new_sqlite_classes": ["Sandbox"] },
+		{ "tag": "v2", "deleted_classes": ["Sandbox"] },
 	],
-	"durable_objects": {
-		"bindings": [{ "class_name": "Sandbox", "name": "Sandbox" }],
+	//
+	// SCANNER_ORIGIN is public config, so it lives here. SCANNER_API_KEY is a
+	// secret and must NOT be added to this file — set it with:
+	//     wrangler secret put SCANNER_API_KEY
+	// and put a local copy in .dev.vars (gitignored) for `wrangler dev`.
+	//
+	// The origin below is a placeholder: point it at wherever you run the
+	// scanner API (see k8s/ in a private overlay, or any host exposing
+	// /api/scan). Rather than editing this file — which would put your own
+	// infrastructure's hostname into version control — copy it to
+	// wrangler.local.jsonc (gitignored), fill in your real origin and route,
+	// and deploy with:
+	//     wrangler deploy -c wrangler.local.jsonc
+	"vars": {
+		"SCANNER_ORIGIN": "https://scanner.example.com",
 	},
-	"migrations": [{ "tag": "v1", "new_sqlite_classes": ["Sandbox"] }],
 	// The built React app (see ../app) is served as static assets from the
 	// same Worker; only /api/* is routed to the fetch handler below, so the
-	// whole thing is a single deploy with no CORS to configure.
+	// whole thing is a single deploy with no CORS to configure. Static asset
+	// requests are free and do not count against the daily request limit.
 	"assets": {
 		"directory": "../app/dist",
 		"binding": "ASSETS",
 		"run_worker_first": ["/api/*"],
 		"not_found_handling": "single-page-application",
 	},
-	// Requires grebnev.org to already be an active Cloudflare zone on this
-	// account (Websites > grebnev.org > Overview shows "Active"). Remove
-	// this block to fall back to the default *.workers.dev URL.
-	"routes": [{ "pattern": "sbom.grebnev.org", "custom_domain": true }],
+	// A custom domain requires its zone to already be active on this Cloudflare
+	// account. Left out here so a fresh clone deploys to the default
+	// *.workers.dev URL with no setup; add a "routes" block in
+	// wrangler.local.jsonc if you want your own hostname, e.g.
+	//     "routes": [{ "pattern": "sbom.example.com", "custom_domain": true }]
 }

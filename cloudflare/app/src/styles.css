@@ -129,6 +129,94 @@ body {
 	margin-bottom: 1.5rem;
 }
 
+/* --- Scan progress --- */
+
+.scan-progress {
+	background: #fff;
+	border: 1px solid #e2e4e8;
+	border-radius: 8px;
+	padding: 1rem 1.25rem;
+	margin-bottom: 1.5rem;
+}
+
+.scan-progress-head {
+	display: flex;
+	justify-content: space-between;
+	align-items: baseline;
+	gap: 1rem;
+	margin-bottom: 0.6rem;
+}
+
+.scan-progress-phase {
+	font-weight: 600;
+}
+
+.scan-progress-count {
+	color: #555;
+	/* Tabular figures stop the counter from jittering horizontally as the
+	   digits change, which is very visible when it updates every 2.5 s. */
+	font-variant-numeric: tabular-nums;
+	font-size: 0.9rem;
+}
+
+.scan-progress-track {
+	height: 8px;
+	background: #eceef1;
+	border-radius: 999px;
+	overflow: hidden;
+}
+
+.scan-progress-bar {
+	height: 100%;
+	background: #2f6feb;
+	border-radius: 999px;
+	transition: width 0.3s ease;
+}
+
+/* Indeterminate: the phase size isn't known yet (or the pod is still being
+   scheduled), so a sliding sliver communicates "busy" without implying a
+   specific completion percentage. */
+.scan-progress-bar.indeterminate {
+	width: 35%;
+	animation: scan-progress-slide 1.4s ease-in-out infinite;
+}
+
+@keyframes scan-progress-slide {
+	0% {
+		transform: translateX(-100%);
+	}
+	100% {
+		transform: translateX(285%);
+	}
+}
+
+/* Respect a reduced-motion preference: hold a static bar rather than
+   looping an animation for what can be several minutes. */
+@media (prefers-reduced-motion: reduce) {
+	.scan-progress-bar.indeterminate {
+		animation: none;
+		width: 100%;
+		opacity: 0.4;
+	}
+}
+
+.scan-progress-log {
+	margin: 0.85rem 0 0;
+	padding: 0.65rem 0.8rem;
+	max-height: 11rem;
+	overflow-y: auto;
+	background: #1e2128;
+	color: #d7dae0;
+	border-radius: 6px;
+	font-size: 0.78rem;
+	line-height: 1.45;
+	/* The scanner emits one line per warning, and some are very long (URLs in
+	   upstream error messages). Wrapping keeps the panel from scrolling
+	   sideways. */
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+
 /* --- Results --- */
 
 .results-toolbar {

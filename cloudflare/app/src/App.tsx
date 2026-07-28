@@ -1,7 +1,8 @@
 import { useCallback, useState } from "react";
 import { runScan } from "./api";
-import type { ScanRequest } from "./api";
+import type { ScanRequest, ScanUpdate } from "./api";
 import ScanForm from "./components/ScanForm";
+import ScanProgressPanel from "./components/ScanProgressPanel";
 import SummaryCards from "./components/SummaryCards";
 import TierBarChart from "./components/TierBarChart";
 import FindingsTable from "./components/FindingsTable";
@@ -47,17 +48,23 @@ export default function App() {
 	const [error, setError] = useState<string | null>(null);
 	const [result, setResult] = useState<ScanResult | null>(null);
 	const [selected, setSelected] = useState<Finding | null>(null);
+	const [update, setUpdate] = useState<ScanUpdate | null>(null);
 
 	const handleSubmit = useCallback(async (req: ScanRequest) => {
 		setLoading(true);
 		setError(null);
+		// Clear the previous run's progress and results up front, so a second
+		// scan never shows the first one's log tail next to a live bar.
+		setUpdate({ status: "pending" });
+		setResult(null);
 		try {
-			const scanResult = await runScan(req);
+			const scanResult = await runScan(req, setUpdate);
 			setResult(scanResult);
 		} catch (err) {
 			setError(err instanceof Error ? err.message : "scan failed");
 		} finally {
 			setLoading(false);
+			setUpdate(null);
 		}
 	}, []);
 
@@ -73,6 +80,8 @@ export default function App() {
 			</header>
 
 			<ScanForm onSubmit={handleSubmit} loading={loading} />
+
+			{loading && update && <ScanProgressPanel update={update} />}
 
 			{error && <div className="error-banner">{error}</div>}
 
